@@ -151,7 +151,7 @@ function QueueItemCard({ item, onDeleteWaitingItem }: { item: QueuedFile; onDele
         </span>
         <div className="min-w-0 flex-1">
           <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-            <MiddleEllipsis text={item.filename} className="text-sm font-bold text-slate-900" />
+            <MiddleEllipsis text={item.filename} containerClassName="min-w-0" className="text-sm font-bold text-slate-900" />
             <StatusBadge status={queueStatusLabel(item.status)} />
           </div>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
@@ -314,7 +314,7 @@ function ResultCard({
         )}
         <div className="min-w-0 flex-1">
           <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-            <MiddleEllipsis text={result.filename} className="text-sm font-bold text-slate-900" />
+            <MiddleEllipsis text={result.filename} containerClassName="min-w-0" className="text-sm font-bold text-slate-900" />
             <StatusBadge status={result.status === 'success' ? '成功' : '失败'} />
           </div>
           <div className="mt-1 break-words text-xs text-slate-600">{result.message}</div>

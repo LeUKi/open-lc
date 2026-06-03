@@ -1,4 +1,6 @@
-export type DownloaderType = 'motrix' | 'aria2'
+export type DownloaderType = 'aria2' | 'abdm'
+
+export type DownloaderPreset = 'motrix' | 'motrix-next' | 'tauri-motrix' | 'aria2' | 'abdm'
 
 export type DownloaderConfig = {
   id: string
@@ -28,13 +30,43 @@ export type SendToDownloaderResult = {
 }
 
 const motrixDefaultRpcUrl = 'http://127.0.0.1:16800/jsonrpc'
+const motrixNextDefaultRpcUrl = 'http://127.0.0.1:16801/jsonrpc'
+const abdmDefaultRpcUrl = 'http://127.0.0.1:15151'
 const aria2DefaultRpcUrl = 'http://127.0.0.1:6800/jsonrpc'
 
-export const defaultDownloaderForType = (type: DownloaderType): DownloaderConfig => ({
-  id: `${type}-${Date.now().toString(36)}`,
-  name: type === 'motrix' ? 'Motrix' : 'aria2',
-  type,
-  rpcUrl: type === 'motrix' ? motrixDefaultRpcUrl : aria2DefaultRpcUrl,
+const downloaderPresetDefaults = {
+  motrix: {
+    name: 'Motrix',
+    type: 'aria2',
+    rpcUrl: motrixDefaultRpcUrl,
+  },
+  'motrix-next': {
+    name: 'Motrix Next',
+    type: 'aria2',
+    rpcUrl: motrixNextDefaultRpcUrl,
+  },
+  'tauri-motrix': {
+    name: 'Tauri Motrix',
+    type: 'aria2',
+    rpcUrl: motrixNextDefaultRpcUrl,
+  },
+  abdm: {
+    name: 'ABDM',
+    type: 'abdm',
+    rpcUrl: abdmDefaultRpcUrl,
+  },
+  aria2: {
+    name: 'aria2',
+    type: 'aria2',
+    rpcUrl: aria2DefaultRpcUrl,
+  },
+} satisfies Record<DownloaderPreset, { name: string; type: DownloaderType; rpcUrl: string }>
+
+export const defaultDownloaderForPreset = (preset: DownloaderPreset): DownloaderConfig => ({
+  id: `${preset}-${Date.now().toString(36)}`,
+  name: downloaderPresetDefaults[preset].name,
+  type: downloaderPresetDefaults[preset].type,
+  rpcUrl: downloaderPresetDefaults[preset].rpcUrl,
   token: '',
   downloadDir: '',
   preserveSourceDir: false,
@@ -42,18 +74,25 @@ export const defaultDownloaderForType = (type: DownloaderType): DownloaderConfig
   isDefault: false,
 })
 
+export const defaultDownloaderForType = (type: DownloaderType): DownloaderConfig => defaultDownloaderForPreset(type)
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
 const stringOr = (value: unknown, fallback = '') => (typeof value === 'string' ? value : fallback)
 
 const boolOr = (value: unknown, fallback = false) => (typeof value === 'boolean' ? value : fallback)
 
-const normalizeDownloaderType = (value: unknown): DownloaderType => (value === 'aria2' ? 'aria2' : 'motrix')
+const normalizeDownloaderType = (value: unknown): DownloaderType => (value === 'abdm' ? 'abdm' : 'aria2')
+
+const presetForStoredType = (value: unknown): DownloaderPreset => {
+  if (value === 'motrix' || value === 'motrix-next' || value === 'tauri-motrix' || value === 'abdm') return value
+  return 'aria2'
+}
 
 const normalizeDownloader = (value: unknown, index: number): DownloaderConfig | null => {
   if (!isRecord(value)) return null
   const type = normalizeDownloaderType(value.type)
-  const fallback = defaultDownloaderForType(type)
+  const fallback = defaultDownloaderForPreset(presetForStoredType(value.type))
   const rpcUrl = stringOr(value.rpcUrl, fallback.rpcUrl).trim()
   if (!rpcUrl) return null
   return {
@@ -69,22 +108,20 @@ const normalizeDownloader = (value: unknown, index: number): DownloaderConfig | 
   }
 }
 
+export const normalizeDownloaders = (downloaders: DownloaderConfig[]) => {
+  if (downloaders.length === 0) return downloaders
+  const enabled = downloaders.filter((item) => item.enabled && item.rpcUrl.trim())
+  const defaultId = enabled.find((item) => item.isDefault)?.id ?? enabled[0]?.id ?? downloaders[0]?.id
+  return downloaders.map((item) => ({ ...item, isDefault: item.id === defaultId }))
+}
+
 export const parseDownloaders = (value: string | undefined): DownloaderConfig[] => {
   if (!value?.trim()) return []
   try {
     const parsed = JSON.parse(value) as unknown
     if (!Array.isArray(parsed)) return []
     const normalized = parsed.map(normalizeDownloader).filter((item): item is DownloaderConfig => item !== null)
-    if (!normalized.some((item) => item.isDefault) && normalized[0]) {
-      return normalized.map((item, index) => ({ ...item, isDefault: index === 0 }))
-    }
-    let defaultSeen = false
-    return normalized.map((item) => {
-      if (!item.isDefault) return item
-      if (defaultSeen) return { ...item, isDefault: false }
-      defaultSeen = true
-      return item
-    })
+    return normalizeDownloaders(normalized)
   } catch {
     return []
   }
@@ -92,7 +129,7 @@ export const parseDownloaders = (value: string | undefined): DownloaderConfig[] 
 
 export const serializeDownloaders = (downloaders: DownloaderConfig[]) =>
   JSON.stringify(
-    downloaders.map((item) => ({
+    normalizeDownloaders(downloaders).map((item) => ({
       id: item.id,
       name: item.name.trim(),
       type: item.type,
@@ -120,6 +157,8 @@ const aria2ErrorMessage = (value: unknown) => {
   }
   return '下载器返回错误'
 }
+
+export const abdmDownloadTaskUrl = (baseUrl: string) => `${baseUrl.replace(/\/+$/g, '')}/start-headless-download`
 
 const normalizePathSeparators = (value: string) => value.replace(/\\/g, '/')
 
@@ -154,8 +193,7 @@ export const downloaderRequestOptions = (downloader: Pick<DownloaderConfig, 'dow
   }
 }
 
-export const sendToDownloader = async (downloader: DownloaderConfig, item: DownloadableItem): Promise<string> => {
-  const requestOptions = downloaderRequestOptions(downloader, item)
+const sendToAria2CompatibleDownloader = async (downloader: DownloaderConfig, item: DownloadableItem, requestOptions: ReturnType<typeof downloaderRequestOptions>) => {
   const options: Record<string, unknown> = {
     out: requestOptions.out,
   }
@@ -182,6 +220,38 @@ export const sendToDownloader = async (downloader: DownloaderConfig, item: Downl
   if (isRecord(body) && body.error) throw new Error(aria2ErrorMessage(body.error))
   if (isRecord(body) && typeof body.result === 'string') return body.result
   throw new Error('下载器响应无效')
+}
+
+const sendToAbdm = async (downloader: DownloaderConfig, item: DownloadableItem, requestOptions: ReturnType<typeof downloaderRequestOptions>) => {
+  const headers: Record<string, string> = {}
+  if (item.ua) headers['User-Agent'] = item.ua
+
+  const response = await fetch(abdmDownloadTaskUrl(downloader.rpcUrl), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      downloadSource: {
+        type: 'http',
+        link: item.url,
+        headers,
+        suggestedName: requestOptions.out,
+      },
+      folder: requestOptions.dir || undefined,
+      name: requestOptions.out,
+    }),
+  })
+  const text = await response.text().catch(() => '')
+  if (!response.ok) throw new Error(`下载器请求失败 ${response.status}${text ? `: ${text}` : ''}`)
+  if (text.trim() && text.trim() !== 'OK') throw new Error(text.trim())
+  return 'OK'
+}
+
+export const sendToDownloader = async (downloader: DownloaderConfig, item: DownloadableItem): Promise<string> => {
+  const requestOptions = downloaderRequestOptions(downloader, item)
+  if (downloader.type === 'abdm') return sendToAbdm(downloader, item, requestOptions)
+  return sendToAria2CompatibleDownloader(downloader, item, requestOptions)
 }
 
 export const sendManyToDownloader = async (downloader: DownloaderConfig, items: DownloadableItem[]) => {

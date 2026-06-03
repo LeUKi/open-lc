@@ -50,7 +50,7 @@ export function HistoryDetailDrawer({
         <div className="flex items-start gap-3 border-b border-slate-200 px-5 py-4">
           <div className="min-w-0 flex-1">
             <h3 className="text-base font-bold text-slate-900">历史详情</h3>
-            {record ? <MiddleEllipsis text={record.filename} className="mt-1 max-w-[420px] text-sm text-slate-500" /> : null}
+            {record ? <MiddleEllipsis text={record.filename} className="mt-1 text-sm text-slate-500" maxWidthPx={420} /> : null}
           </div>
           <button className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" type="button" aria-label="关闭" onClick={onClose}>
             <X className="size-5" />

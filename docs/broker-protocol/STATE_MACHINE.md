@@ -33,9 +33,9 @@ When the apply window closes, the Broker selects candidates:
 - The task becomes `RUNNING`.
 - The first candidate becomes `ACTIVE`.
 
-`RUNNING` means one or more candidates may be active or waiting. The first success submission makes the task `PRIMARY_COMPLETED` and exposes the primary result to the requester.
+`RUNNING` means one or more candidates may be active or waiting. The first success submission exposes the primary result to the requester. The task becomes `PRIMARY_COMPLETED` after the desired main-contributor result count is reached, or after candidates are exhausted with at least one primary result.
 
-`PRIMARY_COMPLETED` means the primary result exists, but active candidates may still submit secondary success before their own `parse_deadline`.
+`PRIMARY_COMPLETED` means the primary result exists and no new candidates should be activated, but active candidates may still submit before their own `parse_deadline`.
 
 `SETTLED` and `FAILED` are terminal.
 
@@ -49,7 +49,7 @@ When a Participation becomes `ACTIVE`, the Broker sets:
 
 The Broker must not expose `task_payload` before the Participation is `ACTIVE`.
 
-The Broker should not activate new candidates after a primary success exists.
+The Broker may keep activating candidates after primary success until `desired_result_count` main-contributor successes are collected or candidates are exhausted.
 
 ## Submission Rules
 
@@ -57,8 +57,9 @@ The Broker should not activate new candidates after a primary success exists.
 - Submission after `parse_deadline` must be rejected.
 - A Participation can submit only once.
 - The first success is `primary`.
-- Later success submissions from already active candidates may be `secondary`.
-- Failure submissions have `submission_role: "none"`.
+- Later success submissions may be `secondary`.
+- The first `desired_result_count` successes have `reward_role: "main_contributor"`; later successes have `reward_role: "secondary"`.
+- Failure submissions have `submission_role: "none"` and `reward_role: "none"`.
 
 ## Forbidden Behavior
 

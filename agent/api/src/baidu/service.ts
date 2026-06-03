@@ -38,6 +38,7 @@ const directFirstMaxBytes = 50 * MIB
 const accountWaitRetryMs = 1000
 const autoTempDeleteRetryLimit = 2
 const manualTempDeleteRetryLimit = 5
+const localAccountParseFailedMessage = '本地账号未能解析该文件。若这是该账号自己分享的文件，请换其他账号解析。'
 
 type FileListInput = {
   shareUrl: string
@@ -1448,7 +1449,7 @@ const executeWithAccounts = async (params: {
     file: params.file,
     status: 'failed',
     errorCode: lastFailure?.code ?? 'NO_ACCOUNT_SUCCEEDED',
-    errorMessage: '本地账号未能成功解析该文件',
+    errorMessage: localAccountParseFailedMessage,
     attemptCount: attempts,
   })
   attachExecutionArtifacts(recordId, params.jobId)
@@ -1458,12 +1459,12 @@ const executeWithAccounts = async (params: {
     recordId,
     status: 'failed',
     code: lastFailure?.code ?? 'NO_ACCOUNT_SUCCEEDED',
-    message: '本地账号未能成功解析该文件',
+    message: localAccountParseFailedMessage,
     details: { attempts, failures: attemptedFailures },
   })
   throw {
     code: 'PARSE_FAILED',
-    message: '本地账号未能成功解析该文件',
+    message: localAccountParseFailedMessage,
     status: 'failed',
     attempts: attemptedFailures,
     recordId,

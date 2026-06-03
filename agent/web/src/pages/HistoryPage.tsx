@@ -280,7 +280,7 @@ export function HistoryPage() {
                       ) : null}
                     </td>
                     <td className="p-3">
-                      <MiddleEllipsis text={record.filename} className="max-w-[320px] font-semibold" />
+                      <MiddleEllipsis text={record.filename} className="font-semibold" maxWidthPx={320} />
                       <div className="text-xs text-slate-500">
                         {formatBytes(record.sizeBytes)} · fs_id {record.fsId}
                       </div>

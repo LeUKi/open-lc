@@ -40,7 +40,9 @@ import {
   heartbeatBroker,
   listBrokerRunEvents,
   listBrokerRuns,
+  appErrorInfo,
   updateBrokerConfig,
+  verifyBrokerDraftConfig,
 } from '../broker/runtime'
 import { badRequest, notFound, unauthorized, unknownErrorMessage } from '../lib/errors'
 import { createLinkProxyContext, createProxiedDownloadUrl } from '../lib/linkProxy'
@@ -166,6 +168,14 @@ const brokerConfigSchema = z.object({
   baseUrl: z.string().url(),
   agentToken: z.string(),
   enabled: z.boolean().optional(),
+  heartbeatIntervalSeconds: z.number().optional(),
+  pollIntervalSeconds: z.number().optional(),
+  maxConcurrentRuns: z.number().optional(),
+})
+
+const brokerVerifySchema = z.object({
+  baseUrl: z.string().url(),
+  agentToken: z.string().min(1),
   heartbeatIntervalSeconds: z.number().optional(),
   pollIntervalSeconds: z.number().optional(),
   maxConcurrentRuns: z.number().optional(),
@@ -713,6 +723,28 @@ export const typedRoutes = new Hono<AgentEnv>()
       maxConcurrentRuns: body.maxConcurrentRuns,
     })
     return c.json({ code: 'OK', data: getPublicBrokerConfig(nextConfig) })
+  })
+  .post('/api/broker/verify', zValidator('json', brokerVerifySchema), async (c) => {
+    const body = c.req.valid('json')
+    try {
+      const result = await verifyBrokerDraftConfig({
+        baseUrl: body.baseUrl,
+        agentToken: body.agentToken,
+      })
+      return c.json({ code: 'OK', data: result })
+    } catch (error) {
+      const info = appErrorInfo(error)
+      return c.json({
+        code: 'OK',
+        data: {
+          ok: false,
+          error: info.message || unknownErrorMessage(error, 'Broker 连接检测失败'),
+          errorCode: info.code,
+          httpStatus: info.httpStatus,
+          targetUrl: info.targetUrl,
+        },
+      })
+    }
   })
   .post('/api/broker/heartbeat', zValidator('json', heartbeatSchema), async (c) => {
     await heartbeatBroker()

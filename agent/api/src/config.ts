@@ -103,7 +103,7 @@ export const config: AppConfig = {
   accountHealthTransientFailureThreshold: Math.max(1, numberFromEnv('ACCOUNT_HEALTH_TRANSIENT_FAILURE_THRESHOLD', 3)),
   linkProxyBaseUrl: stringFromEnv('PUBLIC_BASE_URL', ''),
   linkProxySecret: stringFromEnv('URL_ENCRYPTION_KEY', ''),
-  linkProxyVersion: stringFromEnv('LINK_PROXY_VERSION', 'v1'),
+  linkProxyVersion: stringFromEnv('LINK_PROXY_VERSION', 'none'),
   linkProxyV2Endpoints: stringFromEnv('LINK_PROXY_V2_ENDPOINTS', ''),
   downloadersJson: stringFromEnv('DOWNLOADERS_JSON', ''),
   brokerBaseUrl: stringFromEnv('BROKER_BASE_URL', ''),

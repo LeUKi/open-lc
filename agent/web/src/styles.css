@@ -36,8 +36,79 @@ button:disabled {
   cursor: not-allowed;
 }
 
+@keyframes agent-bling-bounce {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  18% {
+    transform: translateY(-1px) scale(1.025);
+  }
+  32% {
+    transform: translateY(0) scale(1);
+  }
+  48% {
+    transform: translateY(-0.5px) scale(1.015);
+  }
+  64% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes agent-bling-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.96);
+  }
+  45% {
+    opacity: 0.85;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes agent-bling-sparkle {
+  0%,
+  100% {
+    opacity: 0.8;
+    transform: rotate(0deg) scale(1);
+  }
+  40% {
+    opacity: 1;
+    transform: rotate(-8deg) scale(1.16);
+  }
+  70% {
+    opacity: 0.92;
+    transform: rotate(6deg) scale(1.04);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .bling-fill-button:not(:disabled) {
+    animation: agent-bling-bounce 1.8s ease-in-out infinite;
+  }
+
+  .bling-fill-glow {
+    animation: agent-bling-glow 1.8s ease-in-out infinite;
+  }
+
+  .bling-fill-sparkle {
+    animation: agent-bling-sparkle 1.8s ease-in-out infinite;
+  }
+}
+
 input,
 select,
 textarea {
   color: #0f172a;
+}
+
+@media (max-width: 768px) {
+  .mobile-scrollbar-none {
+    scrollbar-width: none;
+  }
+
+  .mobile-scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }

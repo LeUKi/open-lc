@@ -4,7 +4,8 @@
   "main": "src/index.js",
   "compatibility_date": "2026-05-28",
   "vars": {
-    "ALLOWED_HOSTS": "*"
+    "ALLOWED_HOSTS": "*",
+    "MAX_TOKEN_TTL_SECONDS": "86400"
   },
   "version_metadata": {
     "binding": "CF_VERSION_METADATA"

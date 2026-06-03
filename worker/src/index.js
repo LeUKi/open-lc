@@ -54,6 +54,8 @@ const V2_VERSION = "v2";
 const V2_KID = "x1";
 const V2_AAD = "v2.x1";
 const V2_ALG = "X25519-HKDF-SHA256-AES-256-GCM";
+const WORKER_RUNTIME = "cloudflare";
+const WORKER_VERSION = 2;
 
 const V2_X25519_INFO = "open-lc:v2:x25519:x1";
 const V2_AES_INFO = "open-lc:v2:aes-gcm:v2.x1";
@@ -205,6 +207,7 @@ export default {
  */
 async function handleV2Auto(requestUrl, env, encryptionRoot) {
   const material = await getV2KeyMaterial(encryptionRoot);
+  const maxTokenTtlSeconds = getMaxTokenTtlSeconds(env);
 
   return jsonResponse({
     ok: true,
@@ -217,6 +220,9 @@ async function handleV2Auto(requestUrl, env, encryptionRoot) {
     keySource: encryptionRoot.source,
     secure: encryptionRoot.secure,
     warning: encryptionRoot.warning,
+    workerRuntime: WORKER_RUNTIME,
+    workerVersion: WORKER_VERSION,
+    maxTokenTtlSeconds,
   });
 }
 
@@ -228,6 +234,7 @@ async function handleV2Auto(requestUrl, env, encryptionRoot) {
  */
 async function handleV2Keys(requestUrl, env, encryptionRoot) {
   const material = await getV2KeyMaterial(encryptionRoot);
+  const maxTokenTtlSeconds = getMaxTokenTtlSeconds(env);
 
   return jsonResponse({
     ok: true,
@@ -236,6 +243,9 @@ async function handleV2Keys(requestUrl, env, encryptionRoot) {
     keySource: encryptionRoot.source,
     secure: encryptionRoot.secure,
     warning: encryptionRoot.warning,
+    workerRuntime: WORKER_RUNTIME,
+    workerVersion: WORKER_VERSION,
+    maxTokenTtlSeconds,
     keys: [
       {
         kid: V2_KID,
@@ -244,6 +254,7 @@ async function handleV2Keys(requestUrl, env, encryptionRoot) {
         fingerprint: material.fingerprint,
         status: "active",
         tokenPrefix: `${requestUrl.origin}/lc/v2.x1.`,
+        maxTokenTtlSeconds,
       },
     ],
   });
@@ -921,6 +932,8 @@ function helpText(extraMessage = "", encryptionRoot = null) {
   lines.push("    [version_metadata]");
   lines.push('    binding = "CF_VERSION_METADATA"');
   lines.push("  MAX_TOKEN_TTL_SECONDS is optional. Default: 86400.");
+  lines.push("  v2 discovery returns workerRuntime, workerVersion, and maxTokenTtlSeconds.");
+  lines.push("  Agent link TTL must not exceed maxTokenTtlSeconds.");
   lines.push("  ALLOWED_HOSTS is optional. Default: *.");
   lines.push("");
   lines.push("Notes:");

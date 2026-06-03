@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
-import { ChevronDown, ChevronUp, ExternalLink, HelpCircle, LogOut, Loader2, Lock, Plus, RotateCcw, Save, ShieldOff, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, ExternalLink, HelpCircle, LogOut, Loader2, Lock, Plus, RotateCcw, Save, Settings, ShieldOff, Trash2 } from 'lucide-react'
 import { useSetAtom } from 'jotai'
 import {
   api,
@@ -9,6 +9,7 @@ import {
   setStoredAgentPassword,
   type AgentSetting,
   type AgentSettings,
+  type BrokerVerifyResult,
   type DesktopRuntime,
   type RiskConsentType,
   type TempFilesCleanupResult,
@@ -17,7 +18,15 @@ import {
 import { RiskConsentDialog } from '../components/RiskConsentDialog'
 import { TempFileCleanupProgressModal } from '../components/TempFileCleanupProgress'
 import { Button, ConfirmDialog, CopyButton, MiddleEllipsis, Modal, Panel } from '../components/ui'
-import { defaultDownloaderForType, parseDownloaders, serializeDownloaders, type DownloaderConfig, type DownloaderType } from '../lib/downloaders'
+import {
+  defaultDownloaderForPreset,
+  defaultDownloaderForType,
+  parseDownloaders,
+  serializeDownloaders,
+  type DownloaderConfig,
+  type DownloaderPreset,
+  type DownloaderType,
+} from '../lib/downloaders'
 import { formatDateTime } from '../lib/format'
 import { errorAtom, clearParseExecutionAtom, pushNotificationAtom } from '../state'
 import esaWorkerSource from '../../../../scripts/esa.edge.js?raw'
@@ -40,8 +49,11 @@ type PendingRiskConsent = {
   afterAccept: () => void
 } | null
 type WorkerHelpTab = 'quick' | 'manual' | 'esa'
-type WorkerConfigVersion = 'v1' | 'v2'
+type WorkerConfigVersion = 'none' | 'v1' | 'v2'
 type WorkerWizardStep = 'version' | 'form' | 'verify' | 'save'
+type BrokerWizardStep = 'mode' | 'form' | 'verify' | 'save'
+
+const downloaderPresets = ['motrix', 'motrix-next', 'tauri-motrix', 'abdm', 'aria2'] as const satisfies readonly DownloaderPreset[]
 
 const workerDeployUrl = 'https://deploy.workers.cloudflare.com/?url=https://github.com/LeUKi/open-lc/tree/main/worker'
 const workerSourceUrl = 'https://github.com/LeUKi/open-lc/blob/main/scripts/worker.js'
@@ -58,6 +70,33 @@ const settingsBadgeCellClassName = 'hidden items-center lg:flex lg:justify-start
 const settingsActionCellClassName =
   'grid min-h-8 grid-cols-[repeat(auto-fit,minmax(76px,1fr))] gap-1.5 sm:flex sm:flex-wrap sm:items-center lg:flex-nowrap lg:justify-end'
 const settingsActionButtonClassName = 'w-full sm:w-auto'
+const settingsCardClassName = 'overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm shadow-slate-200/50'
+const defaultWorkerMaxTokenTtlSeconds = 86_400
+
+type WorkerTtlLimit = {
+  endpoint: string
+  maxTokenTtlSeconds: number
+}
+
+type LinkCacheTtlRisk = {
+  message: string
+  description: string
+}
+
+type BrokerWizardVerifyResult = BrokerVerifyResult & {
+  baseUrl?: string
+  agentToken?: string
+  heartbeatIntervalSeconds?: string
+  pollIntervalSeconds?: string
+  maxConcurrentRuns?: string
+  error?: string
+}
+
+type PendingLinkTtlConfirm = {
+  setting: AgentSetting
+  value: string
+  risk: LinkCacheTtlRisk
+} | null
 
 const groupMeta: Record<SettingsGroupKey, { title: string }> = {
   desktop: {
@@ -120,11 +159,71 @@ const settingsCount = (settings: AgentSettings | undefined, groups: SettingsGrou
   groups.reduce((count, group) => count + (settings?.groups[group]?.length ?? 0), 0)
 
 const visibleSettings = (items: AgentSetting[]) => items.filter((item) => item.name !== 'downloadersJson')
-const visibleDownloadSettings = (items: AgentSetting[], version: string) =>
-  visibleSettings(items).filter((item) => {
-    if (version === 'v2') return item.name !== 'linkProxyBaseUrl' && item.name !== 'linkProxySecret'
-    return item.name !== 'linkProxyV2Endpoints'
-  })
+const workerWizardSettingNames = new Set(['linkProxyBaseUrl', 'linkProxySecret', 'linkProxyV2Endpoints'])
+const visibleDownloadSettings = (items: AgentSetting[]) => visibleSettings(items).filter((item) => !workerWizardSettingNames.has(item.name))
+const brokerWizardSettingNames = new Set(['brokerBaseUrl', 'brokerAgentToken', 'brokerHeartbeatIntervalSeconds', 'brokerPollIntervalSeconds', 'brokerMaxConcurrentRuns'])
+const visibleBrokerSettings = (items: AgentSetting[]) => items.filter((item) => !brokerWizardSettingNames.has(item.name))
+
+const normalizeWorkerConfigVersion = (value: unknown): WorkerConfigVersion => {
+  if (value === 'v2') return 'v2'
+  if (value === 'v1') return 'v1'
+  return 'none'
+}
+
+const workerConfigVersionLabel = (value: unknown) => {
+  const version = normalizeWorkerConfigVersion(value)
+  if (version === 'v2') return 'v2 公钥发现'
+  if (version === 'v1') return 'v1 共享密钥'
+  return '无'
+}
+
+const workerConfigVersionDescription = (value: unknown) => {
+  const version = normalizeWorkerConfigVersion(value)
+  if (version === 'v2') return '当前使用 Worker v2 代理结果链接。'
+  if (version === 'v1') return '当前使用 Worker v1 共享密钥代理结果链接。'
+  return '当前不使用 Worker 代理，结果会直接返回真实下载链接。'
+}
+
+const brokerEnabledLabel = (value: unknown) => (String(value) === 'true' ? '已启用' : '未启用')
+
+const parsePositiveInteger = (value: unknown) => {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : null
+}
+
+const parsePositiveWorkerVersion = (value: unknown) => {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : null
+}
+
+const workerRuntimeLabel = (value: unknown) => {
+  if (typeof value !== 'string' || !value.trim()) return '未声明'
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'cloudflare') return 'Cloudflare Worker'
+  if (normalized === 'esa') return '阿里云 ESA'
+  return value.trim()
+}
+
+const buildLinkCacheTtlRisk = (version: string, ttlSeconds: number | null, workerLimits: WorkerTtlLimit[]): LinkCacheTtlRisk | null => {
+  if (version !== 'v2' || ttlSeconds === null) return null
+
+  if (workerLimits.length > 0) {
+    const exceededLimits = workerLimits.filter((item) => ttlSeconds > item.maxTokenTtlSeconds)
+    if (exceededLimits.length === 0) return null
+    return {
+      message: `当前链接有效期 ${ttlSeconds} 秒超过已检测 Worker 上限。`,
+      description: `超过 Worker MAX_TOKEN_TTL_SECONDS 后，v2 加密结果链接访问会返回 forbidden。受影响端点：${exceededLimits
+        .map((item) => `${item.endpoint}（${item.maxTokenTtlSeconds} 秒）`)
+        .join('；')}`,
+    }
+  }
+
+  if (ttlSeconds <= defaultWorkerMaxTokenTtlSeconds) return null
+  return {
+    message: `当前链接有效期 ${ttlSeconds} 秒超过 Worker 默认上限 ${defaultWorkerMaxTokenTtlSeconds} 秒。`,
+    description: '当前未检测到 Worker 返回 maxTokenTtlSeconds。如果 Worker 仍使用默认 MAX_TOKEN_TTL_SECONDS，v2 加密结果链接访问会返回 forbidden。',
+  }
+}
 
 const riskConsentTypeForSettingToggle = (setting: AgentSetting, nextValue: string, consents?: Record<RiskConsentType, boolean>): RiskConsentType | null => {
   if (nextValue !== 'true') return null
@@ -156,17 +255,13 @@ function SettingInput({
   value,
   pending,
   saving,
-  savingValue,
   onChange,
-  onCommit,
 }: {
   setting: AgentSetting
   value: string
   pending: boolean
   saving: boolean
-  savingValue?: string | null
   onChange: (value: string) => void
-  onCommit?: (value: string) => void
 }) {
   if (setting.type === 'boolean') {
     return (
@@ -186,34 +281,7 @@ function SettingInput({
   }
 
   if (setting.name === 'linkProxyVersion') {
-    const currentValue = saving && savingValue ? (savingValue === 'v2' ? 'v2' : 'v1') : value === 'v2' ? 'v2' : 'v1'
-    const options: Array<{ value: WorkerConfigVersion; label: string }> = [
-      { value: 'v1', label: 'v1 共享密钥' },
-      { value: 'v2', label: 'v2 公钥发现' },
-    ]
-    return (
-      <div className="inline-flex w-full items-center gap-1 rounded-lg bg-slate-100 p-1 sm:w-auto">
-        {options.map((option) => {
-          const active = currentValue === option.value
-          const optionSaving = saving && savingValue === option.value
-          return (
-            <button
-              aria-pressed={active}
-              className={`inline-flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition sm:flex-none ${
-                active ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              } disabled:cursor-not-allowed disabled:opacity-70`}
-              disabled={!setting.editable || pending || active}
-              key={option.value}
-              onClick={() => onCommit?.(option.value)}
-              type="button"
-            >
-              {optionSaving ? <Loader2 className="size-3.5 animate-spin" /> : null}
-              <span className="truncate">{option.label}</span>
-            </button>
-          )
-        })}
-      </div>
-    )
+    return null
   }
 
   if (setting.name === 'linkProxyV2Endpoints') {
@@ -248,7 +316,9 @@ function SettingRow({
   pending,
   savingSettingName,
   savingSettingValue,
-  rowAction,
+  titleHelperForSetting,
+  valueForSetting,
+  helperForSetting,
   onChange,
   onReset,
   onSave,
@@ -258,17 +328,21 @@ function SettingRow({
   pending: boolean
   savingSettingName: string | null
   savingSettingValue: string | null
-  rowAction?: ReactNode
+  titleHelperForSetting?: (setting: AgentSetting) => ReactNode
+  valueForSetting?: (setting: AgentSetting) => ReactNode
+  helperForSetting?: (setting: AgentSetting) => ReactNode
   onChange: (setting: AgentSetting, value: string) => void
   onReset: (setting: AgentSetting) => void
   onSave: (setting: AgentSetting, value?: string) => void
 }) {
+  const titleHelper = titleHelperForSetting?.(setting)
+  const customValue = valueForSetting?.(setting)
+  const helper = helperForSetting?.(setting)
   return (
     <div className={settingsRowClassName}>
       <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <div className="min-w-0 truncate text-sm font-semibold text-slate-900">{setting.label}</div>
-          {rowAction}
           <span className="lg:hidden">
             <SourceBadge setting={setting} />
           </span>
@@ -279,22 +353,24 @@ function SettingRow({
             <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 ring-1 ring-slate-200">只读</span>
           ) : null}
         </div>
-        <MiddleEllipsis text={setting.envName} className="mt-0.5 hidden text-[11px] text-slate-500 sm:block" />
+        {titleHelper ? <div className="mt-1">{titleHelper}</div> : null}
+        <MiddleEllipsis text={setting.envName} className="mt-0.5 hidden text-[11px] text-slate-500 sm:block" copyable />
       </div>
       <div className={settingsBadgeCellClassName}>
         <SourceBadge setting={setting} />
       </div>
       <div className={settingsValueCellClassName}>
-        <SettingInput
-          setting={setting}
-          pending={pending}
-          saving={pending && savingSettingName === setting.name}
-          savingValue={savingSettingName === setting.name ? savingSettingValue : null}
-          value={setting.editable ? (form[setting.name] ?? '') : setting.value}
-          onChange={(value) => onChange(setting, value)}
-          onCommit={(value) => onSave(setting, value)}
-        />
+        {customValue ?? (
+          <SettingInput
+            setting={setting}
+            pending={pending}
+            saving={pending && savingSettingName === setting.name}
+            value={setting.editable ? (form[setting.name] ?? '') : setting.value}
+            onChange={(value) => onChange(setting, value)}
+          />
+        )}
         {setting.sensitive ? <div className="mt-1 text-[11px] text-slate-500">当前：{setting.displayValue}</div> : null}
+        {helper}
       </div>
       <div className={settingsActionCellClassName}>
         {setting.editable && setting.type !== 'boolean' ? (
@@ -305,16 +381,18 @@ function SettingRow({
                 保存
               </Button>
             )}
-            <Button
-              className={settingsActionButtonClassName}
-              disabled={pending || setting.source !== 'database'}
-              onClick={() => onReset(setting)}
-              size="sm"
-              variant="secondary"
-            >
-              <RotateCcw className="size-4" />
-              回退
-            </Button>
+            {setting.name === 'linkProxyVersion' ? null : (
+              <Button
+                className={settingsActionButtonClassName}
+                disabled={pending || setting.source !== 'database'}
+                onClick={() => onReset(setting)}
+                size="sm"
+                variant="secondary"
+              >
+                <RotateCcw className="size-4" />
+                回退
+              </Button>
+            )}
           </>
         ) : null}
       </div>
@@ -324,12 +402,12 @@ function SettingRow({
 
 function SectionHeader({ title, count, action }: { title: string; count: number; action?: ReactNode }) {
   return (
-    <div className="flex min-h-11 items-center justify-between gap-2 px-3 py-2.5 sm:px-4">
+    <div className="flex min-h-11 min-w-0 flex-col items-stretch gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-4">
       <div className="flex min-w-0 items-center gap-2">
         <h3 className="truncate text-sm font-bold text-slate-900">{title}</h3>
         <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{count}</span>
       </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
+      {action ? <div className="min-w-0 sm:shrink-0">{action}</div> : null}
     </div>
   )
 }
@@ -347,7 +425,9 @@ function SettingsSection({
   onReset,
   onSave,
   onToggle,
-  rowActionForSetting,
+  titleHelperForSetting,
+  valueForSetting,
+  helperForSetting,
 }: {
   title: string
   items: AgentSetting[]
@@ -361,12 +441,14 @@ function SettingsSection({
   onReset: (setting: AgentSetting) => void
   onSave: (setting: AgentSetting, value?: string) => void
   onToggle?: () => void
-  rowActionForSetting?: (setting: AgentSetting) => ReactNode
+  titleHelperForSetting?: (setting: AgentSetting) => ReactNode
+  valueForSetting?: (setting: AgentSetting) => ReactNode
+  helperForSetting?: (setting: AgentSetting) => ReactNode
 }) {
   if (items.length === 0) return null
 
   return (
-    <section className="border-t border-slate-200">
+    <section className={settingsCardClassName}>
       <SectionHeader
         title={title}
         count={items.length}
@@ -386,7 +468,9 @@ function SettingsSection({
               form={form}
               key={setting.key}
               pending={pending}
-              rowAction={rowActionForSetting?.(setting)}
+              titleHelperForSetting={titleHelperForSetting}
+              valueForSetting={valueForSetting}
+              helperForSetting={helperForSetting}
               savingSettingName={savingSettingName}
               savingSettingValue={savingSettingValue}
               setting={setting}
@@ -403,7 +487,16 @@ function SettingsSection({
 
 function LoadingBlock({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-2 border-t border-slate-200 px-3 py-5 text-sm font-semibold text-slate-600 sm:px-4">
+    <div className={`${settingsCardClassName} flex items-center gap-2 px-3 py-5 text-sm font-semibold text-slate-600 sm:px-4`}>
+      <Loader2 className="size-4 animate-spin" />
+      {label}
+    </div>
+  )
+}
+
+function SettingsLoadingRow({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-5 text-sm font-semibold text-slate-600 sm:px-4">
       <Loader2 className="size-4 animate-spin" />
       {label}
     </div>
@@ -411,7 +504,7 @@ function LoadingBlock({ label }: { label: string }) {
 }
 
 function EmptyBlock({ label }: { label: string }) {
-  return <div className="border-t border-slate-200 px-3 py-8 text-center text-sm font-semibold text-slate-500 sm:px-4">{label}</div>
+  return <div className={`${settingsCardClassName} px-3 py-8 text-center text-sm font-semibold text-slate-500 sm:px-4`}>{label}</div>
 }
 
 function WorkerHelpButton({ onClick }: { onClick: () => void }) {
@@ -428,22 +521,15 @@ function WorkerHelpButton({ onClick }: { onClick: () => void }) {
   )
 }
 
-function WorkerWizardButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-50 hover:text-emerald-700"
-      onClick={onClick}
-      aria-label="Worker 配置向导"
-      type="button"
-    >
-      <Plus className="size-4" />
-      配置向导
-    </button>
-  )
-}
-
 const workerWizardSteps: Array<{ key: WorkerWizardStep; label: string }> = [
   { key: 'version', label: '方式' },
+  { key: 'form', label: '填写' },
+  { key: 'verify', label: '检测' },
+  { key: 'save', label: '保存' },
+]
+
+const brokerWizardSteps: Array<{ key: BrokerWizardStep; label: string }> = [
+  { key: 'mode', label: '状态' },
   { key: 'form', label: '填写' },
   { key: 'verify', label: '检测' },
   { key: 'save', label: '保存' },
@@ -469,6 +555,271 @@ const normalizeEndpointLines = (value: string) => {
       }
     })
   return Array.from(new Set(endpoints)).join('\n')
+}
+
+function BrokerConfigWizard({
+  open,
+  initialForm,
+  verifying,
+  saving,
+  verifyResult,
+  error,
+  onClose,
+  onVerify,
+  onSave,
+}: {
+  open: boolean
+  initialForm: SettingsForm
+  verifying: boolean
+  saving: boolean
+  verifyResult: BrokerWizardVerifyResult | null
+  error: string | null
+  onClose: () => void
+  onVerify: (values: Record<string, string>) => Promise<void>
+  onSave: (values: Record<string, string>) => Promise<void>
+}) {
+  const [step, setStep] = useState<BrokerWizardStep>('mode')
+  const [enabled, setEnabled] = useState(true)
+  const [baseUrl, setBaseUrl] = useState('')
+  const [agentToken, setAgentToken] = useState('')
+  const [heartbeatIntervalSeconds, setHeartbeatIntervalSeconds] = useState('30')
+  const [pollIntervalSeconds, setPollIntervalSeconds] = useState('10')
+  const [maxConcurrentRuns, setMaxConcurrentRuns] = useState('2')
+  const [localError, setLocalError] = useState<string | null>(null)
+  const currentStepIndex = brokerWizardSteps.findIndex((item) => item.key === step)
+  const pending = verifying || saving
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '')
+  const draftValues = {
+    brokerEnabled: String(enabled),
+    brokerBaseUrl: normalizedBaseUrl,
+    brokerAgentToken: agentToken.trim(),
+    brokerHeartbeatIntervalSeconds: heartbeatIntervalSeconds.trim(),
+    brokerPollIntervalSeconds: pollIntervalSeconds.trim(),
+    brokerMaxConcurrentRuns: maxConcurrentRuns.trim(),
+  }
+  const verifyMatchesCurrentInput =
+    verifyResult?.ok === true &&
+    verifyResult.baseUrl === draftValues.brokerBaseUrl &&
+    verifyResult.agentToken === draftValues.brokerAgentToken &&
+    verifyResult.heartbeatIntervalSeconds === draftValues.brokerHeartbeatIntervalSeconds &&
+    verifyResult.pollIntervalSeconds === draftValues.brokerPollIntervalSeconds &&
+    verifyResult.maxConcurrentRuns === draftValues.brokerMaxConcurrentRuns
+
+  useEffect(() => {
+    if (!open) return
+    setStep('mode')
+    setEnabled(String(initialForm.brokerEnabled) === 'true')
+    setBaseUrl(initialForm.brokerBaseUrl ?? '')
+    setAgentToken('')
+    setHeartbeatIntervalSeconds(initialForm.brokerHeartbeatIntervalSeconds || '30')
+    setPollIntervalSeconds(initialForm.brokerPollIntervalSeconds || '10')
+    setMaxConcurrentRuns(initialForm.brokerMaxConcurrentRuns || '2')
+    setLocalError(null)
+  }, [initialForm, open])
+
+  const validateForm = () => {
+    if (!draftValues.brokerBaseUrl) return '请填写 Broker Base URL'
+    if (!draftValues.brokerAgentToken) return '请填写 Agent Token'
+    if (!draftValues.brokerHeartbeatIntervalSeconds) return '请填写 Heartbeat 间隔秒数'
+    if (!draftValues.brokerPollIntervalSeconds) return '请填写任务轮询间隔秒数'
+    if (!draftValues.brokerMaxConcurrentRuns) return '请填写最大并发 Runs'
+    return null
+  }
+
+  const goNext = () => {
+    setLocalError(null)
+    if (step === 'mode') {
+      if (!enabled) {
+        setStep('save')
+        return
+      }
+      setStep('form')
+      return
+    }
+    if (step === 'form') {
+      const message = validateForm()
+      if (message) {
+        setLocalError(message)
+        return
+      }
+      setStep('verify')
+      return
+    }
+    if (step === 'verify') {
+      if (!verifyMatchesCurrentInput) {
+        setLocalError('请先完成 Broker 连接检测')
+        return
+      }
+      setStep('save')
+    }
+  }
+
+  const goBack = () => {
+    setLocalError(null)
+    if (step === 'save') setStep(enabled ? 'verify' : 'mode')
+    else if (step === 'verify') setStep('form')
+    else if (step === 'form') setStep('mode')
+  }
+
+  const verify = async () => {
+    setLocalError(null)
+    const message = validateForm()
+    if (message) {
+      setLocalError(message)
+      return
+    }
+    await onVerify(draftValues)
+  }
+
+  const save = async () => {
+    setLocalError(null)
+    if (!enabled) {
+      await onSave({ brokerEnabled: 'false' })
+      return
+    }
+    if (!verifyMatchesCurrentInput) {
+      setLocalError('请先完成 Broker 连接检测')
+      return
+    }
+    await onSave(draftValues)
+  }
+
+  const alert = localError || error
+
+  return (
+    <Modal open={open} title="Broker 配置向导" onClose={onClose} maxWidthClassName="max-w-3xl">
+      <div className="grid gap-5">
+        <div className="grid grid-cols-4 items-start gap-1.5">
+          {brokerWizardSteps.map((item, index) => {
+            const active = item.key === step
+            const done = index < currentStepIndex
+            return (
+              <div className="relative grid min-w-0 justify-items-center gap-1.5 text-center" key={item.key}>
+                {index > 0 ? <div className={`absolute right-1/2 top-3 h-px w-full ${done || active ? 'bg-emerald-200' : 'bg-slate-200'}`} /> : null}
+                <div
+                  className={`relative z-10 flex size-6 items-center justify-center rounded-full text-xs font-bold ring-1 ${active ? 'bg-blue-600 text-white ring-blue-600' : done ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-white text-slate-400 ring-slate-200'}`}
+                >
+                  {index + 1}
+                </div>
+                <div className={`truncate text-xs font-semibold ${active ? 'text-blue-700' : done ? 'text-emerald-700' : 'text-slate-400'}`}>{item.label}</div>
+              </div>
+            )
+          })}
+        </div>
+
+        {alert ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{alert}</div> : null}
+
+        {step === 'mode' ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            <button
+              className={`rounded-lg border p-4 text-left transition ${enabled ? 'border-blue-300 bg-blue-50 text-blue-900 ring-2 ring-blue-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+              onClick={() => setEnabled(true)}
+              type="button"
+            >
+              <div className="text-base font-bold">启用 Broker 执行</div>
+              <div className="mt-2 text-sm leading-6">本地 Agent 会向 Broker 上报能力、报名任务并执行解析。</div>
+            </button>
+            <button
+              className={`rounded-lg border p-4 text-left transition ${!enabled ? 'border-blue-300 bg-blue-50 text-blue-900 ring-2 ring-blue-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+              onClick={() => setEnabled(false)}
+              type="button"
+            >
+              <div className="text-base font-bold">关闭 Broker 执行</div>
+              <div className="mt-2 text-sm leading-6">停止参与 Broker 任务，但保留已填写的 URL、Token 和轮询参数。</div>
+            </button>
+          </div>
+        ) : null}
+
+        {step === 'form' ? (
+          <div className="grid gap-4">
+            <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+              Broker Base URL
+              <input className={settingsInputClassName} disabled={pending} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://broker.example.com" value={baseUrl} />
+            </label>
+            <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+              Agent Token
+              <input className={settingsInputClassName} disabled={pending} onChange={(event) => setAgentToken(event.target.value)} placeholder="从 Broker 后台 Agent 页面复制" type="password" value={agentToken} />
+              <span className="text-xs font-medium leading-5 text-slate-500">Agent Token 不会回显；启用或修改 Broker 连接时需要重新填写。</span>
+            </label>
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+                Heartbeat 间隔秒数
+                <input className={settingsInputClassName} disabled={pending} min={5} max={3600} onChange={(event) => setHeartbeatIntervalSeconds(event.target.value)} type="number" value={heartbeatIntervalSeconds} />
+              </label>
+              <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+                Poll 间隔秒数
+                <input className={settingsInputClassName} disabled={pending} min={3} max={3600} onChange={(event) => setPollIntervalSeconds(event.target.value)} type="number" value={pollIntervalSeconds} />
+              </label>
+              <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
+                最大并发 Runs
+                <input className={settingsInputClassName} disabled={pending} min={1} max={5} onChange={(event) => setMaxConcurrentRuns(event.target.value)} type="number" value={maxConcurrentRuns} />
+              </label>
+            </div>
+          </div>
+        ) : null}
+
+        {step === 'verify' ? (
+          <div className="grid gap-4">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+              点击检测后，本地 Agent 会使用当前草稿配置向 Broker 发送一次 heartbeat。检测只验证连接，不会保存配置或启动执行。
+            </div>
+            <Button disabled={pending} onClick={verify} type="button" variant="secondary">
+              {verifying ? <Loader2 className="size-4 animate-spin" /> : null}
+              检测 Broker 连接
+            </Button>
+            {verifyResult ? (
+              verifyResult.ok && verifyMatchesCurrentInput ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800">
+                  检测通过：Broker 返回 {verifyResult.status === 'too_early' ? 'too_early，连接和 Token 有效' : 'ok'}。
+                </div>
+              ) : verifyResult.ok ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">配置内容已修改，请重新检测。</div>
+              ) : (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">检测失败：{verifyResult.error ?? 'Broker 连接检测失败'}</div>
+              )
+            ) : null}
+          </div>
+        ) : null}
+
+        {step === 'save' ? (
+          <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            <div className="font-bold text-slate-900">即将保存</div>
+            <div>Broker 执行：{enabled ? '启用' : '关闭'}</div>
+            {enabled ? (
+              <>
+                <div className="break-all">Broker Base URL：{draftValues.brokerBaseUrl}</div>
+                <div>Heartbeat / Poll：{draftValues.brokerHeartbeatIntervalSeconds}s / {draftValues.brokerPollIntervalSeconds}s</div>
+                <div>最大并发 Runs：{draftValues.brokerMaxConcurrentRuns}</div>
+              </>
+            ) : (
+              <div>将保留当前 Broker URL、Token 和轮询参数，之后可通过向导重新启用。</div>
+            )}
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+          <Button disabled={pending} onClick={onClose} type="button" variant="secondary">
+            取消
+          </Button>
+          {step !== 'mode' ? (
+            <Button disabled={pending} onClick={goBack} type="button" variant="secondary">
+              上一步
+            </Button>
+          ) : null}
+          {step === 'save' ? (
+            <Button disabled={pending} onClick={save} type="button">
+              {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+              保存配置
+            </Button>
+          ) : (
+            <Button disabled={pending} onClick={goNext} type="button">
+              下一步
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
 }
 
 function WorkerConfigWizard({
@@ -510,9 +861,9 @@ function WorkerConfigWizard({
 
   useEffect(() => {
     if (!open) return
-    const currentVersion = initialForm.linkProxyVersion === 'v2' ? 'v2' : 'v1'
+    const currentVersion = normalizeWorkerConfigVersion(initialForm.linkProxyVersion)
     setStep('version')
-    setVersion(preferredVersion ?? (currentVersion === 'v1' && !initialForm.linkProxyV2Endpoints ? 'v2' : currentVersion))
+    setVersion(preferredVersion ?? currentVersion)
     setBaseUrl(initialForm.linkProxyBaseUrl ?? '')
     setSecret('')
     setV2Endpoints(initialForm.linkProxyV2Endpoints ?? '')
@@ -522,6 +873,10 @@ function WorkerConfigWizard({
   const goNext = () => {
     setLocalError(null)
     if (step === 'version') {
+      if (version === 'none') {
+        setStep('save')
+        return
+      }
       setStep('form')
       return
     }
@@ -556,7 +911,7 @@ function WorkerConfigWizard({
 
   const goBack = () => {
     setLocalError(null)
-    if (step === 'save') setStep('verify')
+    if (step === 'save') setStep(version === 'none' ? 'version' : 'verify')
     else if (step === 'verify') setStep('form')
     else if (step === 'form') setStep('version')
   }
@@ -573,6 +928,12 @@ function WorkerConfigWizard({
 
   const save = async () => {
     setLocalError(null)
+    if (version === 'none') {
+      await onSave({
+        linkProxyVersion: 'none',
+      })
+      return
+    }
     if (version === 'v2') {
       if (!v2Verified) {
         setLocalError('请先完成 v2 端点检测')
@@ -617,7 +978,15 @@ function WorkerConfigWizard({
         {alert ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{alert}</div> : null}
 
         {step === 'version' ? (
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3 md:grid-cols-3">
+            <button
+              className={`rounded-lg border p-4 text-left transition ${version === 'none' ? 'border-blue-300 bg-blue-50 text-blue-900 ring-2 ring-blue-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+              onClick={() => setVersion('none')}
+              type="button"
+            >
+              <div className="text-base font-bold">无</div>
+              <div className="mt-2 text-sm leading-6">不使用 Worker 代理。结果会直接返回真实下载链接，配置最简单，但不会隐藏真实直链。</div>
+            </button>
             <button
               className={`rounded-lg border p-4 text-left transition ${version === 'v2' ? 'border-blue-300 bg-blue-50 text-blue-900 ring-2 ring-blue-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
               onClick={() => setVersion('v2')}
@@ -639,7 +1008,11 @@ function WorkerConfigWizard({
 
         {step === 'form' ? (
           <div className="grid gap-4">
-            {version === 'v2' ? (
+            {version === 'none' ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+                选择“无”后不需要填写 Worker 端点或密钥。已有 v1/v2 配置会保留，之后可通过向导重新启用。
+              </div>
+            ) : version === 'v2' ? (
               <div className="grid gap-1.5 text-sm font-semibold text-slate-700">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <span>Worker v2 代理端点</span>
@@ -675,7 +1048,11 @@ function WorkerConfigWizard({
 
         {step === 'verify' ? (
           <div className="grid gap-4">
-            {version === 'v2' ? (
+            {version === 'none' ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+                无代理模式无需检测。保存后 Agent 会直接返回真实下载链接。
+              </div>
+            ) : version === 'v2' ? (
               <>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
                   点击检测后，本地 Agent 会请求每个端点的 <span className="font-mono text-xs">/lc/v2.auto</span>，确认版本、kid 和 publicKey 可用。
@@ -690,10 +1067,16 @@ function WorkerConfigWizard({
                       <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800" key={item.endpoint}>
                         <div className="font-bold break-all">{item.endpoint}</div>
                         <div className="mt-1 grid gap-1 text-xs font-semibold">
+                          <div>Worker 类型：{workerRuntimeLabel(item.workerRuntime)}</div>
+                          <div>Worker Discovery 版本：{parsePositiveWorkerVersion(item.workerVersion) ?? '未声明'}</div>
                           <div>kid: {item.kid}</div>
                           <div>publicKey: {item.publicKeyPreview}</div>
                           <div>fingerprint: {item.publicKeyFingerprint}</div>
                           <div className="break-all">tokenPrefix: {item.tokenPrefix}</div>
+                          <div>
+                            最大链接有效期：
+                            {parsePositiveInteger(item.maxTokenTtlSeconds) ? `${parsePositiveInteger(item.maxTokenTtlSeconds)} 秒` : `未声明，按默认 ${defaultWorkerMaxTokenTtlSeconds} 秒配置 Agent 更稳妥`}
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -720,8 +1103,14 @@ function WorkerConfigWizard({
         {step === 'save' ? (
           <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
             <div className="font-bold text-slate-900">即将保存</div>
-            <div>加密方式：{version === 'v2' ? 'v2 公钥发现' : 'v1 共享密钥'}</div>
-            {version === 'v2' ? <div className="whitespace-pre-wrap break-all">Worker v2 代理端点：{normalizedV2Endpoints}</div> : <div className="break-all">Worker 代理端点：{baseUrl.trim()}</div>}
+            <div>加密方式：{workerConfigVersionLabel(version)}</div>
+            {version === 'none' ? (
+              <div>将不使用 Worker 代理，结果链接会直接暴露真实下载地址。</div>
+            ) : version === 'v2' ? (
+              <div className="whitespace-pre-wrap break-all">Worker v2 代理端点：{normalizedV2Endpoints}</div>
+            ) : (
+              <div className="break-all">Worker 代理端点：{baseUrl.trim()}</div>
+            )}
           </div>
         ) : null}
 
@@ -781,8 +1170,8 @@ function WorkerHelpModal({
             <div className="mt-1 leading-6">填写部署后的 Worker 公开地址，用于生成代理下载入口。</div>
           </div>
           <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-            <div className="font-bold text-slate-900">加密方式</div>
-            <div className="mt-1 leading-6">推荐使用 v2：只填 Worker 地址，不用在 Agent 里保存密钥。旧版 v1 需要在 Agent 和 Worker 填同一个密钥。</div>
+            <div className="font-bold text-slate-900">代理模式</div>
+            <div className="mt-1 leading-6">可选择无代理、v2 公钥发现或 v1 共享密钥。推荐需要隐藏真实直链时使用 v2；无代理会直接返回真实下载链接。</div>
           </div>
         </div>
         <div className="overflow-hidden rounded-lg border border-slate-200">
@@ -838,7 +1227,8 @@ function WorkerHelpModal({
                   <li>2. 创建 Worker，进入编辑器。</li>
                   <li>3. 打开上方的 worker.js 或点击复制脚本，将内容粘贴到 Worker 编辑器并部署。</li>
                   <li>4. 在 Settings - Variables and Secrets 中添加 Secret：URL_ENCRYPTION_KEY。</li>
-                  <li>5. 回到 Agent，填写部署后的 Worker 地址。</li>
+                  <li>5. 确认 Variables 中的 MAX_TOKEN_TTL_SECONDS 不小于 Agent 的链接有效期秒数，默认 86400。</li>
+                  <li>6. 回到 Agent，填写部署后的 Worker 地址。</li>
                 </ol>
               </div>
             )}
@@ -863,8 +1253,9 @@ function WorkerHelpModal({
                   <li>1. 打开 ESA Edge Pages 控制台，创建边缘函数。</li>
                   <li>2. 打开上方的 esa.edge.js 或点击复制脚本，将内容粘贴到编辑器。</li>
                   <li>3. 在脚本顶部 CONFIG.URL_ENCRYPTION_KEY 改成高强度随机字符串。</li>
-                  <li>4. ALLOWED_HOSTS 默认是 *，通常无需修改。</li>
-                  <li>5. 部署后回到 Agent，填写 ESA 公开访问地址。</li>
+                  <li>4. 确认 CONFIG.MAX_TOKEN_TTL_SECONDS 不小于 Agent 的链接有效期秒数，默认 86400。</li>
+                  <li>5. ALLOWED_HOSTS 默认是 *，通常无需修改。</li>
+                  <li>6. 部署后回到 Agent，填写 ESA 公开访问地址。</li>
                 </ol>
               </div>
             )}
@@ -874,7 +1265,8 @@ function WorkerHelpModal({
                 Cloudflare 需要设置 Secret：<code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs text-slate-800">URL_ENCRYPTION_KEY</code>；ESA
                 需要修改脚本顶部的 <code className="rounded bg-white px-1.5 py-0.5 font-mono text-xs text-slate-800">CONFIG.URL_ENCRYPTION_KEY</code>。
               </div>
-              <div>使用 v2 时，Agent 只填 Worker 地址；使用 v1 时，Agent 还要填写同一个密钥。</div>
+              <div>选择“无”时不使用 Worker 代理，Agent 会直接返回真实下载链接；使用 v2 时，Agent 只填 Worker 地址；使用 v1 时，Agent 还要填写同一个密钥。</div>
+              <div>Agent 的链接有效期秒数会写入 v2 加密链接 exp，不能超过 Worker 的 MAX_TOKEN_TTL_SECONDS，否则代理访问会返回 forbidden。</div>
               <div>ALLOWED_HOSTS 默认是 *，通常无需配置；如需限制上游域名，可填写逗号分隔的 host。</div>
               <div className="rounded-md bg-white px-3 py-2 font-mono text-xs leading-5 text-slate-600 ring-1 ring-slate-200">
                 Cloudflare: Workers & Pages -&gt; 选择 Worker -&gt; Settings -&gt; Variables and Secrets -&gt; Add -&gt; Secret
@@ -883,7 +1275,8 @@ function WorkerHelpModal({
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-800">
               v2 验证：访问 <span className="font-mono text-xs">https://your-worker.example.com/lc/v2.auto</span>，应返回{' '}
               <span className="font-mono text-xs">version: "v2"</span>、<span className="font-mono text-xs">kid: "x1"</span> 和{' '}
-              <span className="font-mono text-xs">publicKey</span>。
+              <span className="font-mono text-xs">publicKey</span>。新版本还会返回 <span className="font-mono text-xs">workerRuntime</span>、{' '}
+              <span className="font-mono text-xs">workerVersion</span> 和 <span className="font-mono text-xs">maxTokenTtlSeconds</span>，用于排查端点类型和提示 Agent 链接有效期上限。
             </div>
           </div>
         </div>
@@ -912,10 +1305,10 @@ function PasswordAccessSection({
   onDisable: () => void
 }) {
   return (
-    <section className="border-t border-slate-200">
+    <section className={settingsCardClassName}>
       <SectionHeader title="访问密码" count={1} />
       {loading ? (
-        <LoadingBlock label="正在读取访问设置" />
+        <SettingsLoadingRow label="正在读取访问设置" />
       ) : (
         <form onSubmit={onSubmit}>
           <div className={settingsRowClassName}>
@@ -980,7 +1373,7 @@ function DesktopAccessSection({
   const enabled = runtime.externalAccessEnabled
 
   return (
-    <section className="border-t border-slate-200">
+    <section className={settingsCardClassName}>
       <SectionHeader title="桌面访问" count={1} />
       <div className={settingsRowClassName}>
         <div className="min-w-0">
@@ -1048,8 +1441,18 @@ function DownloadersSection({
   onChange: (downloaders: DownloaderDraft[]) => void
   onSave: () => void
 }) {
-  const addDownloader = (type: DownloaderType) => {
-    const next = defaultDownloaderForType(type)
+  const isBuiltInDefaultName = (type: DownloaderType, value: string) =>
+    downloaderPresets.some((preset) => {
+      const config = defaultDownloaderForPreset(preset)
+      return config.type === type && config.name === value
+    })
+  const isBuiltInDefaultRpcUrl = (type: DownloaderType, value: string) =>
+    downloaderPresets.some((preset) => {
+      const config = defaultDownloaderForPreset(preset)
+      return config.type === type && config.rpcUrl === value
+    })
+  const addDownloader = (preset: DownloaderPreset) => {
+    const next = defaultDownloaderForPreset(preset)
     onChange([
       ...downloaders.map((item) => ({ ...item, isDefault: downloaders.length === 0 ? false : item.isDefault })),
       { ...next, isDefault: downloaders.length === 0 },
@@ -1060,10 +1463,10 @@ function DownloadersSection({
       downloaders.map((item) => {
         if (item.id !== id) return item
         const updated = { ...item, ...patch }
-        if (patch.type) {
+        if (patch.type && patch.type !== item.type) {
           const fallback = defaultDownloaderForType(patch.type)
-          updated.rpcUrl = item.rpcUrl === defaultDownloaderForType(item.type).rpcUrl ? fallback.rpcUrl : item.rpcUrl
-          updated.name = item.name === defaultDownloaderForType(item.type).name ? fallback.name : item.name
+          updated.rpcUrl = isBuiltInDefaultRpcUrl(item.type, item.rpcUrl) ? fallback.rpcUrl : item.rpcUrl
+          updated.name = isBuiltInDefaultName(item.type, item.name) ? fallback.name : item.name
         }
         return updated
       }),
@@ -1079,20 +1482,18 @@ function DownloadersSection({
   }
 
   return (
-    <section className="border-t border-slate-200">
+    <section className={settingsCardClassName}>
       <SectionHeader
         title="下载器"
         count={downloaders.length}
         action={
-          <div className="flex gap-1.5">
-            <Button disabled={pending} onClick={() => addDownloader('motrix')} size="sm" variant="secondary">
-              <Plus className="size-4" />
-              Motrix
-            </Button>
-            <Button disabled={pending} onClick={() => addDownloader('aria2')} size="sm" variant="secondary">
-              <Plus className="size-4" />
-              aria2
-            </Button>
+          <div className="flex min-w-0 flex-wrap gap-1.5">
+            {downloaderPresets.map((preset) => (
+              <Button className="min-w-0" disabled={pending} key={preset} onClick={() => addDownloader(preset)} size="sm" variant="secondary">
+                <Plus className="size-4" />
+                <span className="truncate">{defaultDownloaderForPreset(preset).name}</span>
+              </Button>
+            ))}
           </div>
         }
       />
@@ -1104,16 +1505,16 @@ function DownloadersSection({
             <div className="grid gap-3 rounded-lg border border-slate-200 p-3" key={downloader.id}>
               <div className="grid gap-2 md:grid-cols-[120px_minmax(120px,1fr)_minmax(200px,2fr)]">
                 <label className="grid gap-1 text-xs font-semibold text-slate-500">
-                  类型
+                  协议
                   <select
                     className={settingsInputClassName}
                     value={downloader.type}
                     onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                      updateDownloader(downloader.id, { type: event.target.value === 'aria2' ? 'aria2' : 'motrix' })
+                      updateDownloader(downloader.id, { type: event.target.value === 'abdm' ? 'abdm' : 'aria2' })
                     }
                   >
-                    <option value="motrix">Motrix</option>
-                    <option value="aria2">aria2</option>
+                    <option value="aria2">aria2 JSON-RPC</option>
+                    <option value="abdm">ABDM</option>
                   </select>
                 </label>
                 <label className="grid gap-1 text-xs font-semibold text-slate-500">
@@ -1236,7 +1637,7 @@ function MaintenanceSection({
 
   return (
     <>
-      <section className="border-t border-slate-200">
+      <section className={settingsCardClassName}>
         <SectionHeader
           title="维护状态"
           count={activeCount}
@@ -1254,7 +1655,7 @@ function MaintenanceSection({
           <Metric label="Broker 运行中" value={summary?.activeBrokerRuns ?? 0} />
         </div>
       </section>
-      <section className="border-t border-slate-200">
+      <section className={settingsCardClassName}>
         <SectionHeader
           title="中转文件清理"
           count={(tempCleanup?.deletePending ?? 0) + (tempCleanup?.deleteFailed ?? 0) + (tempCleanup?.orphan ?? 0)}
@@ -1334,7 +1735,7 @@ function MaintenanceSection({
           ) : null}
         </div>
       </section>
-      <section className="border-t border-slate-200">
+      <section className={settingsCardClassName}>
         <SectionHeader title="危险操作" count={2} />
         <div className="divide-y divide-slate-100">
           <MaintenanceActionRow
@@ -1488,12 +1889,16 @@ export function SettingsPage() {
   const [desktopSwitchOverlay, setDesktopSwitchOverlay] = useState<DesktopSwitchOverlay>(null)
   const [downloadersDraft, setDownloadersDraft] = useState<DownloaderDraft[]>([])
   const [pendingRiskConsent, setPendingRiskConsent] = useState<PendingRiskConsent>(null)
+  const [brokerWizardOpen, setBrokerWizardOpen] = useState(false)
+  const [brokerWizardError, setBrokerWizardError] = useState<string | null>(null)
+  const [brokerVerifyResult, setBrokerVerifyResult] = useState<BrokerWizardVerifyResult | null>(null)
   const [workerHelpOpen, setWorkerHelpOpen] = useState(false)
   const [workerHelpTab, setWorkerHelpTab] = useState<WorkerHelpTab>('quick')
   const [workerWizardOpen, setWorkerWizardOpen] = useState(false)
   const [workerWizardPreferredVersion, setWorkerWizardPreferredVersion] = useState<WorkerConfigVersion | null>(null)
   const [workerWizardError, setWorkerWizardError] = useState<string | null>(null)
   const [workerV2VerifyResult, setWorkerV2VerifyResult] = useState<WorkerV2VerifyResult | null>(null)
+  const [pendingLinkTtlConfirm, setPendingLinkTtlConfirm] = useState<PendingLinkTtlConfirm>(null)
   const [tempCleanupResult, setTempCleanupResult] = useState<TempFilesCleanupResult | null>(null)
   const [tempCleanupError, setTempCleanupError] = useState<string | null>(null)
   const statusQuery = api.api.security.status.$get.useQuery()
@@ -1502,6 +1907,7 @@ export function SettingsPage() {
   const maintenanceSummaryQuery = api.api.maintenance.summary.$get.useQuery()
   const securityMutation = api.api.security.settings.$put.useMutation()
   const agentSettingsMutation = api.api.settings.$put.useMutation()
+  const brokerVerifyMutation = api.api.broker.verify.$post.useMutation()
   const workerV2VerifyMutation = api.api.settings['link-proxy'].v2.verify.$post.useMutation()
   const desktopAccessMutation = api.api.desktop['external-access'].$put.useMutation()
   const desktopOpenBrowserMutation = api.api.desktop['open-external-browser'].$post.useMutation()
@@ -1519,6 +1925,24 @@ export function SettingsPage() {
   const maintenancePending = maintenanceCleanupMutation.isPending || maintenanceFactoryResetMutation.isPending || tempFilesCleanupMutation.isPending
   const settingsQueryError =
     agentSettingsQuery.isError && !settingsQueryErrorDismissed ? messageFromError(agentSettingsQuery.error, '读取 Agent 配置失败') : null
+  const normalizedCurrentV2Endpoints = normalizeEndpointLines(form.linkProxyV2Endpoints ?? settings?.items.linkProxyV2Endpoints?.value ?? '')
+  const workerV2VerifyMatchesCurrentSettings = workerV2VerifyResult?.endpoints.join('\n') === normalizedCurrentV2Endpoints
+  const workerTtlLimits = useMemo<WorkerTtlLimit[]>(
+    () => {
+      if (!workerV2VerifyMatchesCurrentSettings) return []
+      return (
+        workerV2VerifyResult?.results
+          .map((item) => ({
+            endpoint: item.endpoint,
+            maxTokenTtlSeconds: parsePositiveInteger(item.maxTokenTtlSeconds),
+          }))
+          .filter((item): item is WorkerTtlLimit => item.maxTokenTtlSeconds !== null) ?? []
+      )
+    },
+    [workerV2VerifyMatchesCurrentSettings, workerV2VerifyResult],
+  )
+  const activeLinkProxyVersion = normalizeWorkerConfigVersion(form.linkProxyVersion || settings?.items.linkProxyVersion?.value)
+  const currentLinkCacheTtlRisk = buildLinkCacheTtlRisk(activeLinkProxyVersion, parsePositiveInteger(form.linkCacheTtlSeconds ?? settings?.items.linkCacheTtlSeconds?.value), workerTtlLimits)
 
   useEffect(() => {
     if (!passwordEnabled) return
@@ -1554,11 +1978,11 @@ export function SettingsPage() {
           category.key === 'security'
             ? 1 + (desktopMode ? 1 : 0)
             : category.key === 'broker'
-              ? settingsCount(settings, ['broker'])
+              ? visibleBrokerSettings(settings?.groups.broker ?? []).length
               : category.key === 'runtime'
                 ? settingsCount(settings, ['account', 'parse', 'health'])
                 : category.key === 'advanced'
-                  ? visibleSettings(settings?.groups.download ?? []).length + settingsCount(settings, ['baidu', 'deployment'])
+                  ? visibleDownloadSettings(settings?.groups.download ?? []).length + settingsCount(settings, ['baidu', 'deployment'])
                   : 2
 
         return {
@@ -1618,6 +2042,10 @@ export function SettingsPage() {
   }
 
   const updateSettingValue = (setting: AgentSetting, value: string) => {
+    if (setting.name === 'brokerEnabled') {
+      openBrokerWizard()
+      return
+    }
     if (setting.type === 'boolean') {
       const consentType = riskConsentTypeForSettingToggle(setting, value, statusQuery.data?.data.riskConsents)
       if (consentType) {
@@ -1633,20 +2061,117 @@ export function SettingsPage() {
     setForm((current) => ({ ...current, [setting.name]: value }))
   }
 
-  const rowActionForSetting = (setting: AgentSetting) => {
+  const openWorkerWizard = () => {
+    setWorkerWizardError(null)
+    setWorkerWizardPreferredVersion(null)
+    setWorkerV2VerifyResult(null)
+    setWorkerWizardOpen(true)
+  }
+
+  const openBrokerWizard = () => {
+    setBrokerWizardError(null)
+    setBrokerVerifyResult(null)
+    setBrokerWizardOpen(true)
+  }
+
+  const titleHelperForSetting = (setting: AgentSetting) => {
+    if (setting.name === 'brokerEnabled') {
+      return <div className="text-xs leading-5 text-slate-500">Broker 执行会让本地 Agent 参与 Broker 任务，需要有效 Broker Base URL 和 Agent Token。</div>
+    }
     if (setting.name !== 'linkProxyVersion') return null
+    return <WorkerHelpButton onClick={() => setWorkerHelpOpen(true)} />
+  }
+
+  const valueForSetting = (setting: AgentSetting) => {
+    if (setting.name === 'brokerEnabled') {
+      const enabled = form.brokerEnabled ?? settings?.items.brokerEnabled?.value ?? 'false'
+      return (
+        <button
+          className="flex h-9 w-full min-w-0 items-center overflow-hidden rounded-md border border-slate-300 bg-white text-left text-sm font-semibold text-slate-800 outline-none transition hover:border-blue-300 hover:bg-blue-50/40 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+          disabled={agentSettingsMutation.isPending}
+          onClick={openBrokerWizard}
+          type="button"
+        >
+          <span className="min-w-0 flex-1 truncate px-2.5">
+            当前：{brokerEnabledLabel(enabled)}
+          </span>
+          <span className="h-full w-px shrink-0 bg-slate-200" aria-hidden="true" />
+          <span className="grid h-full w-9 shrink-0 place-items-center text-slate-500">
+            {agentSettingsMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Settings className="size-4" />}
+          </span>
+        </button>
+      )
+    }
+    if (setting.name !== 'linkProxyVersion') return null
+    const version = normalizeWorkerConfigVersion(form.linkProxyVersion || settings?.items.linkProxyVersion?.value)
     return (
-      <span className="inline-flex flex-wrap items-center gap-1">
-        <WorkerHelpButton onClick={() => setWorkerHelpOpen(true)} />
-        <WorkerWizardButton
-          onClick={() => {
-            setWorkerWizardError(null)
-            setWorkerWizardPreferredVersion(null)
-            setWorkerV2VerifyResult(null)
-            setWorkerWizardOpen(true)
-          }}
-        />
-      </span>
+      <button
+        className="flex h-9 w-full min-w-0 items-center overflow-hidden rounded-md border border-slate-300 bg-white text-left text-sm font-semibold text-slate-800 outline-none transition hover:border-blue-300 hover:bg-blue-50/40 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+        disabled={agentSettingsMutation.isPending}
+        onClick={openWorkerWizard}
+        type="button"
+      >
+        <span className="min-w-0 flex-1 truncate px-2.5">
+          当前：{workerConfigVersionLabel(version)}
+        </span>
+        <span className="h-full w-px shrink-0 bg-slate-200" aria-hidden="true" />
+        <span className="grid h-full w-9 shrink-0 place-items-center text-slate-500">
+          {agentSettingsMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Settings className="size-4" />}
+        </span>
+      </button>
+    )
+  }
+
+  const helperForSetting = (setting: AgentSetting) => {
+    if (setting.name === 'brokerEnabled') {
+      const baseUrl = form.brokerBaseUrl ?? settings?.items.brokerBaseUrl?.value ?? ''
+      const tokenConfigured = Boolean(settings?.items.brokerAgentToken?.displayValue === '已设置' || settings?.items.brokerAgentToken?.value)
+      const heartbeat = form.brokerHeartbeatIntervalSeconds ?? settings?.items.brokerHeartbeatIntervalSeconds?.value ?? '30'
+      const poll = form.brokerPollIntervalSeconds ?? settings?.items.brokerPollIntervalSeconds?.value ?? '10'
+      const maxRuns = form.brokerMaxConcurrentRuns ?? settings?.items.brokerMaxConcurrentRuns?.value ?? '2'
+      return (
+        <div className="mt-1.5 grid gap-1.5 text-xs leading-5 text-slate-500">
+          <div>修改启用状态、Broker URL、Agent Token 或轮询参数都需要通过配置向导完成。</div>
+          {baseUrl ? <div className="break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">Broker Base URL：{baseUrl}</div> : null}
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">
+            Agent Token：{tokenConfigured ? '已设置' : '未设置'}；Heartbeat / Poll：{heartbeat}s / {poll}s；最大并发 Runs：{maxRuns}
+          </div>
+        </div>
+      )
+    }
+    if (setting.name === 'linkProxyVersion') {
+      const version = normalizeWorkerConfigVersion(form.linkProxyVersion || settings?.items.linkProxyVersion?.value)
+      const v1Endpoint = form.linkProxyBaseUrl ?? settings?.items.linkProxyBaseUrl?.value ?? ''
+      const v2Endpoints = normalizeEndpointLines(form.linkProxyV2Endpoints ?? settings?.items.linkProxyV2Endpoints?.value ?? '')
+      return (
+        <div className="mt-1.5 grid gap-1.5 text-xs leading-5 text-slate-500">
+          <div>{workerConfigVersionDescription(version)} 修改代理模式、端点或密钥都需要通过配置向导完成。</div>
+          {version === 'v2' && v2Endpoints ? (
+            <div className="whitespace-pre-wrap break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">v2 端点：{v2Endpoints}</div>
+          ) : null}
+          {version === 'v1' && v1Endpoint ? (
+            <div className="break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">v1 端点：{v1Endpoint}</div>
+          ) : null}
+          {version !== 'none' && !v1Endpoint && !v2Endpoints ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 font-semibold text-amber-800">当前模式缺少可用端点，请通过配置向导补全。</div>
+          ) : null}
+        </div>
+      )
+    }
+    if (setting.name !== 'linkCacheTtlSeconds') return null
+    return (
+      <div className="mt-2 grid gap-1.5 text-xs leading-5">
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-slate-600">
+          该值决定结果链接承诺可用时间和转存文件清理生命周期，也会作为 Broker 接单能力按 provider 上报。
+          {activeLinkProxyVersion === 'v2' ? ` 使用 Worker v2 时，不能超过 Worker 的 MAX_TOKEN_TTL_SECONDS，否则访问代理链接会返回 forbidden。Worker 默认上限为 ${defaultWorkerMaxTokenTtlSeconds} 秒。` : null}
+        </div>
+        {currentLinkCacheTtlRisk ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 font-semibold text-amber-800">
+            <div>{currentLinkCacheTtlRisk.message}</div>
+            <div className="mt-1 font-medium">{currentLinkCacheTtlRisk.description}</div>
+          </div>
+        ) : null}
+      </div>
     )
   }
 
@@ -1664,6 +2189,65 @@ export function SettingsPage() {
     } catch (err) {
       setWorkerWizardError(messageFromError(err, '检测 Worker v2 代理端点失败'))
     }
+  }
+
+  const verifyBrokerConfig = async (values: Record<string, string>) => {
+    setBrokerWizardError(null)
+    setBrokerVerifyResult(null)
+    try {
+      const response = await brokerVerifyMutation.mutateAsync({
+        json: {
+          baseUrl: values.brokerBaseUrl,
+          agentToken: values.brokerAgentToken,
+          heartbeatIntervalSeconds: Number(values.brokerHeartbeatIntervalSeconds),
+          pollIntervalSeconds: Number(values.brokerPollIntervalSeconds),
+          maxConcurrentRuns: Number(values.brokerMaxConcurrentRuns),
+        },
+      })
+      setBrokerVerifyResult({
+        ...response.data,
+        baseUrl: values.brokerBaseUrl,
+        agentToken: values.brokerAgentToken,
+        heartbeatIntervalSeconds: values.brokerHeartbeatIntervalSeconds,
+        pollIntervalSeconds: values.brokerPollIntervalSeconds,
+        maxConcurrentRuns: values.brokerMaxConcurrentRuns,
+      })
+      if (response.data.ok === false) setBrokerWizardError('error' in response.data ? response.data.error : 'Broker 连接检测失败')
+    } catch (err) {
+      setBrokerWizardError(messageFromError(err, '检测 Broker 连接失败'))
+    }
+  }
+
+  const persistBrokerWizardSettings = async (values: Record<string, string>) => {
+    setBrokerWizardError(null)
+    try {
+      await agentSettingsMutation.mutateAsync({
+        json: {
+          values,
+        },
+      })
+      const result = await agentSettingsQuery.refetch()
+      setForm(initialFormFromSettings(result.data?.data))
+      await api.api.settings.$get.invalidate()
+      setBrokerWizardOpen(false)
+      pushNotification({
+        variant: 'success',
+        message: values.brokerEnabled === 'false' ? 'Broker 执行已关闭' : 'Broker 配置已保存',
+      })
+    } catch (err) {
+      setBrokerWizardError(messageFromError(err, '保存 Broker 配置失败'))
+    }
+  }
+
+  const saveBrokerWizardSettings = async (values: Record<string, string>) => {
+    if (values.brokerEnabled === 'true' && !statusQuery.data?.data.riskConsents.broker_execution) {
+      setPendingRiskConsent({
+        type: 'broker_execution',
+        afterAccept: () => void persistBrokerWizardSettings(values),
+      })
+      return
+    }
+    await persistBrokerWizardSettings(values)
   }
 
   const saveWorkerWizardSettings = async (values: Record<string, string>) => {
@@ -1714,53 +2298,8 @@ export function SettingsPage() {
     }
   }
 
-  const openWorkerWizardForV2 = (message?: string) => {
-    setWorkerWizardError(message ?? null)
-    setWorkerWizardPreferredVersion('v2')
-    setWorkerV2VerifyResult(null)
-    setWorkerWizardOpen(true)
-  }
-
-  const saveLinkProxyVersion = async (setting: AgentSetting, value: string) => {
-    const nextValue = value === 'v2' ? 'v2' : 'v1'
-    const currentValue = settings?.items.linkProxyVersion?.value === 'v2' ? 'v2' : 'v1'
-    if (nextValue === currentValue) return
-    setError(null)
-    setSavingSettingName(setting.name)
-    setSavingSettingValue(nextValue)
-    try {
-      const values: Record<string, string> = {
-        linkProxyVersion: nextValue,
-      }
-      if (nextValue === 'v2') values.linkProxyV2Endpoints = form.linkProxyV2Endpoints ?? ''
-      const result = await agentSettingsMutation.mutateAsync({
-        json: {
-          values,
-        },
-      })
-      setForm(initialFormFromSettings(result.data))
-      await agentSettingsQuery.refetch()
-      pushNotification({
-        variant: 'success',
-        message: `${setting.label} 已保存`,
-      })
-    } catch (err) {
-      const message = messageFromError(err, `保存 ${setting.label} 失败`)
-      if (nextValue === 'v2') {
-        await agentSettingsQuery.refetch()
-        openWorkerWizardForV2(message)
-      } else {
-        setError(message)
-      }
-    } finally {
-      setSavingSettingName((current) => (current === setting.name ? null : current))
-      setSavingSettingValue(null)
-    }
-  }
-
   const saveSetting = async (setting: AgentSetting, overrideValue?: string) => {
-    if (setting.name === 'linkProxyVersion' && overrideValue) {
-      await saveLinkProxyVersion(setting, overrideValue)
+    if (setting.name === 'linkProxyVersion') {
       return
     }
     setError(null)
@@ -1769,14 +2308,19 @@ export function SettingsPage() {
       setError('Worker 加密密钥不能使用示例值 changeme，请换成自己的密钥。')
       return
     }
+    if (setting.name === 'linkCacheTtlSeconds') {
+      const risk = buildLinkCacheTtlRisk(activeLinkProxyVersion, parsePositiveInteger(value), workerTtlLimits)
+      if (risk) {
+        setPendingLinkTtlConfirm({ setting, value, risk })
+        return
+      }
+    }
+    await persistSetting(setting, value)
+  }
+
+  const persistSetting = async (setting: AgentSetting, value: string) => {
     const values: Record<string, string> = {
       [setting.name]: value,
-    }
-    if (setting.name === 'linkProxyVersion' && value === 'v2') {
-      values.linkProxyV2Endpoints = form.linkProxyV2Endpoints ?? ''
-    }
-    if (setting.name === 'linkProxyV2Endpoints') {
-      values.linkProxyVersion = value.trim() ? form.linkProxyVersion || settings?.items.linkProxyVersion?.value || 'v1' : 'v1'
     }
     try {
       await agentSettingsMutation.mutateAsync({
@@ -1799,7 +2343,6 @@ export function SettingsPage() {
     const values: Record<string, string> =
       setting.name === 'linkProxyV2Endpoints'
         ? {
-            linkProxyVersion: 'v1',
             linkProxyV2Endpoints: '',
           }
         : {
@@ -1814,7 +2357,7 @@ export function SettingsPage() {
       await agentSettingsQuery.refetch()
       pushNotification({
         variant: 'success',
-        message: setting.name === 'linkProxyV2Endpoints' ? '已回退 Worker v2 代理端点，并切换到 v1' : `${setting.label} 已回退到环境变量或默认值`,
+            message: setting.name === 'linkProxyV2Endpoints' ? '已回退 Worker v2 代理端点' : `${setting.label} 已回退到环境变量或默认值`,
       })
     } catch (err) {
       setError(messageFromError(err, `回退 ${setting.label} 失败`))
@@ -2018,7 +2561,7 @@ export function SettingsPage() {
 
     if (activeCategory === 'security') {
       return (
-        <>
+        <div className="grid gap-4">
           <PasswordAccessSection
             loading={statusQuery.isLoading}
             password={password}
@@ -2038,7 +2581,7 @@ export function SettingsPage() {
               onToggle={toggleDesktopAccess}
             />
           ) : null}
-        </>
+        </div>
       )
     }
 
@@ -2048,11 +2591,14 @@ export function SettingsPage() {
       return (
         <SettingsSection
           form={form}
-          items={settings.groups.broker}
+          items={visibleBrokerSettings(settings.groups.broker)}
           pending={agentSettingsMutation.isPending}
           savingSettingName={savingSettingName}
           savingSettingValue={savingSettingValue}
           title={groupMeta.broker.title}
+          titleHelperForSetting={titleHelperForSetting}
+          valueForSetting={valueForSetting}
+          helperForSetting={helperForSetting}
           onChange={updateSettingValue}
           onReset={resetSetting}
           onSave={saveSetting}
@@ -2062,7 +2608,7 @@ export function SettingsPage() {
 
     if (activeCategory === 'runtime') {
       return (
-        <>
+        <div className="grid gap-4">
           <SettingsSection
             form={form}
             items={settings.groups.account}
@@ -2096,23 +2642,25 @@ export function SettingsPage() {
             onReset={resetSetting}
             onSave={saveSetting}
           />
-        </>
+        </div>
       )
     }
 
     return (
-      <>
+      <div className="grid gap-4">
         <SettingsSection
           form={form}
-          items={visibleDownloadSettings(settings.groups.download, form.linkProxyVersion || settings.items.linkProxyVersion?.value || 'v1')}
+          items={visibleDownloadSettings(settings.groups.download)}
           pending={agentSettingsMutation.isPending}
           savingSettingName={savingSettingName}
           savingSettingValue={savingSettingValue}
           title={groupMeta.download.title}
+          titleHelperForSetting={titleHelperForSetting}
+          valueForSetting={valueForSetting}
+          helperForSetting={helperForSetting}
           onChange={updateSettingValue}
           onReset={resetSetting}
           onSave={saveSetting}
-          rowActionForSetting={rowActionForSetting}
         />
         <DownloadersSection downloaders={downloadersDraft} pending={agentSettingsMutation.isPending} onChange={setDownloadersDraft} onSave={saveDownloaders} />
         <SettingsSection
@@ -2143,7 +2691,7 @@ export function SettingsPage() {
           onSave={saveSetting}
           onToggle={() => toggleAdvancedSection('deployment')}
         />
-      </>
+      </div>
     )
   }
 
@@ -2169,13 +2717,13 @@ export function SettingsPage() {
           </div>
         </Panel>
 
-        <Panel className="overflow-hidden !p-0">
-          <div className="flex min-h-14 items-center px-3 py-3 sm:px-5 sm:py-4">
+        <div className="grid min-w-0 gap-4">
+          <div className="flex min-h-14 items-center px-1 py-1">
             <h2 className="min-w-0 truncate text-base font-bold text-slate-900 sm:text-lg">{activeCategoryMeta.title}</h2>
           </div>
 
           {renderSettingsContent()}
-        </Panel>
+        </div>
       </div>
 
       <ConfirmDialog
@@ -2245,6 +2793,35 @@ export function SettingsPage() {
           afterAccept?.()
         }}
         onCancel={() => setPendingRiskConsent(null)}
+      />
+      <ConfirmDialog
+        cancelLabel="返回修改"
+        confirmLabel="仍然保存"
+        description={pendingLinkTtlConfirm ? `${pendingLinkTtlConfirm.risk.message} ${pendingLinkTtlConfirm.risk.description}` : undefined}
+        disabled={agentSettingsMutation.isPending}
+        open={pendingLinkTtlConfirm !== null}
+        title="链接有效期可能超过 Worker 上限"
+        variant="primary"
+        onCancel={() => setPendingLinkTtlConfirm(null)}
+        onConfirm={() => {
+          const pending = pendingLinkTtlConfirm
+          setPendingLinkTtlConfirm(null)
+          if (pending) void persistSetting(pending.setting, pending.value)
+        }}
+      />
+      <BrokerConfigWizard
+        error={brokerWizardError}
+        initialForm={form}
+        open={brokerWizardOpen}
+        saving={agentSettingsMutation.isPending}
+        verifying={brokerVerifyMutation.isPending}
+        verifyResult={brokerVerifyResult}
+        onClose={() => {
+          setBrokerWizardOpen(false)
+          setBrokerVerifyResult(null)
+        }}
+        onSave={saveBrokerWizardSettings}
+        onVerify={verifyBrokerConfig}
       />
       <WorkerHelpModal activeTab={workerHelpTab} open={workerHelpOpen} onClose={() => setWorkerHelpOpen(false)} onTabChange={setWorkerHelpTab} />
       <WorkerConfigWizard

@@ -73,6 +73,42 @@ const middleEllipsis = (text: string, width: number, font: string) => {
   return best
 }
 
+const measureContentWidth = (element: HTMLElement) => {
+  const rectWidth = element.getBoundingClientRect().width
+  const style = window.getComputedStyle(element)
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0
+  const paddingRight = Number.parseFloat(style.paddingRight) || 0
+  return Math.max(0, Math.floor(rectWidth - paddingLeft - paddingRight))
+}
+
+const cssPixelValue = (value: string) => {
+  if (!value || value === 'none' || value === 'auto') return 0
+  if (!value.endsWith('px')) return 0
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const middleEllipsisBreakpointPx = 768
+
+const positivePixelValue = (value?: number) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined)
+
+const resolveMiddleEllipsisMaxMeasureWidth = (maxWidthPx?: number, mobileMaxWidthPx?: number) => {
+  const desktopWidth = positivePixelValue(maxWidthPx)
+  const mobileWidth = positivePixelValue(mobileMaxWidthPx)
+  if (typeof window !== 'undefined' && window.innerWidth <= middleEllipsisBreakpointPx && mobileWidth) return mobileWidth
+  return desktopWidth ?? mobileWidth
+}
+
+const middleEllipsisAvailableWidth = (wrapper: HTMLElement, maxMeasureWidthPx?: number) => {
+  if (maxMeasureWidthPx && maxMeasureWidthPx > 0) return maxMeasureWidthPx
+  const wrapperWidth = Math.floor(wrapper.getBoundingClientRect().width)
+  if (wrapperWidth > 0) return wrapperWidth
+  const wrapperStyle = window.getComputedStyle(wrapper)
+  const maxWidthConstraint = cssPixelValue(wrapperStyle.maxWidth)
+  if (maxWidthConstraint > 0) return Math.floor(maxWidthConstraint)
+  return wrapper.parentElement ? measureContentWidth(wrapper.parentElement) : 0
+}
+
 export const copyTextToClipboard = async (value: string) => {
   if (!value) return false
   try {
@@ -135,9 +171,24 @@ export function InlineAlert({
   )
 }
 
-export function MiddleEllipsis({ text, className = '' }: { text: string; className?: string }) {
+export function MiddleEllipsis({
+  text,
+  className = '',
+  containerClassName = '',
+  maxWidthPx,
+  mobileMaxWidthPx,
+  copyable = false,
+}: {
+  text: string
+  className?: string
+  containerClassName?: string
+  maxWidthPx?: number
+  mobileMaxWidthPx?: number
+  copyable?: boolean
+}) {
   const wrapperRef = useRef<HTMLSpanElement | null>(null)
   const textRef = useRef<HTMLSpanElement | null>(null)
+  const [maxMeasureWidthPx, setMaxMeasureWidthPx] = useState(() => resolveMiddleEllipsisMaxMeasureWidth(maxWidthPx, mobileMaxWidthPx))
   const [display, setDisplay] = useState(text)
   const [truncated, setTruncated] = useState(false)
   const [tooltip, setTooltip] = useState<{
@@ -150,15 +201,16 @@ export function MiddleEllipsis({ text, className = '' }: { text: string; classNa
   const copiedTimerRef = useRef<number | null>(null)
 
   const recompute = () => {
-    const element = textRef.current
-    if (!element) return false
-    const width = element.clientWidth
+    const wrapper = wrapperRef.current
+    const textElement = textRef.current
+    if (!wrapper || !textElement) return false
+    const width = middleEllipsisAvailableWidth(wrapper, maxMeasureWidthPx)
     if (width <= 0) {
       setDisplay(text)
       setTruncated(false)
       return false
     }
-    const style = window.getComputedStyle(element)
+    const style = window.getComputedStyle(textElement)
     const font = style.font
     const fullWidth = measureTextWidth(text, font)
     if (fullWidth <= width) {
@@ -188,15 +240,46 @@ export function MiddleEllipsis({ text, className = '' }: { text: string; classNa
 
   useLayoutEffect(() => {
     recompute()
-  }, [text, className])
+  }, [text, className, containerClassName, maxMeasureWidthPx])
 
-  useEffect(
-    () =>
-      subscribeWindowResize(() => {
+  useEffect(() => {
+    const element = wrapperRef.current
+    const parent = element?.parentElement ?? null
+    let frame = 0
+    const updateMaxMeasureWidth = () => {
+      const nextMaxMeasureWidth = resolveMiddleEllipsisMaxMeasureWidth(maxWidthPx, mobileMaxWidthPx)
+      setMaxMeasureWidthPx((current) => (current === nextMaxMeasureWidth ? current : nextMaxMeasureWidth))
+    }
+    const requestRecompute = () => {
+      if (frame) cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(() => {
+        frame = 0
+        updateMaxMeasureWidth()
         recompute()
-      }),
-    [text, className],
-  )
+      })
+    }
+    const unsubscribeResize = subscribeWindowResize(requestRecompute)
+    const observer = element && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(requestRecompute) : null
+    if (element) observer?.observe(element)
+    if (parent) observer?.observe(parent)
+    requestRecompute()
+    return () => {
+      unsubscribeResize()
+      observer?.disconnect()
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [text, className, containerClassName, maxWidthPx, mobileMaxWidthPx, maxMeasureWidthPx])
+
+  useEffect(() => {
+    if (!document.fonts) return
+    let cancelled = false
+    document.fonts.ready.then(() => {
+      if (!cancelled) recompute()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [text, className, containerClassName, maxMeasureWidthPx])
 
   useEffect(() => {
     if (!tooltip) return
@@ -218,8 +301,7 @@ export function MiddleEllipsis({ text, className = '' }: { text: string; classNa
   )
 
   const showTooltip = () => {
-    const isTruncated = recompute()
-    if (!isTruncated) {
+    if (!truncated) {
       setTooltip(null)
       return
     }
@@ -227,6 +309,7 @@ export function MiddleEllipsis({ text, className = '' }: { text: string; classNa
   }
 
   const copyOriginalText = async () => {
+    if (!copyable) return
     const copiedOk = await copyTextToClipboard(text)
     if (!copiedOk) return
     setCopied(true)
@@ -241,16 +324,15 @@ export function MiddleEllipsis({ text, className = '' }: { text: string; classNa
   return (
     <span
       ref={wrapperRef}
-      className="relative block min-w-0 cursor-copy"
+      className={`relative min-w-0 ${copyable ? 'cursor-copy' : ''} ${maxMeasureWidthPx ? 'inline-block max-w-full align-bottom' : 'block w-full max-w-full'} ${containerClassName}`}
+      style={maxMeasureWidthPx ? { maxWidth: maxMeasureWidthPx } : undefined}
       onBlur={() => setTooltip(null)}
-      onClick={() => {
-        void copyOriginalText()
-      }}
+      onClick={copyable ? () => void copyOriginalText() : undefined}
       onMouseEnter={showTooltip}
       onMouseLeave={() => setTooltip(null)}
-      title="点击复制"
+      title={copyable ? '点击复制' : undefined}
     >
-      <span ref={textRef} className={`block min-w-0 overflow-hidden whitespace-nowrap ${className}`} aria-label={text}>
+      <span ref={textRef} className={`block w-full min-w-0 overflow-hidden whitespace-nowrap ${className}`} aria-label={text}>
         {display}
       </span>
       {tooltip && (truncated || copied) ? (
@@ -415,7 +497,7 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={`min-h-10 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 ${props.className ?? ''}`}
+      className={`min-h-10 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500 disabled:placeholder:text-slate-400 ${props.className ?? ''}`}
     />
   )
 }
@@ -424,7 +506,7 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
   return (
     <textarea
       {...props}
-      className={`rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 ${props.className ?? ''}`}
+      className={`rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500 disabled:placeholder:text-slate-400 ${props.className ?? ''}`}
     />
   )
 }
@@ -433,7 +515,7 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className={`min-h-10 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 ${props.className ?? ''}`}
+      className={`min-h-10 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-500 ${props.className ?? ''}`}
     />
   )
 }

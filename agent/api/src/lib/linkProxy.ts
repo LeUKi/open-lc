@@ -2,13 +2,16 @@ import crypto from 'node:crypto'
 import { getDownloadSettings, getSettingWithSource, setSetting } from '../settings/service'
 import { badRequest, unavailable, unknownErrorMessage } from './errors'
 
-export type LinkProxyVersion = 'v1' | 'v2'
+export type LinkProxyVersion = 'none' | 'v1' | 'v2'
 
 type V2Discovery = {
   version: string
   kid: string
   publicKey: string
   tokenPrefix?: string
+  workerRuntime?: string
+  workerVersion?: number
+  maxTokenTtlSeconds?: number
 }
 
 export type LinkProxyContext = {
@@ -19,6 +22,9 @@ type V2KeyInfo = {
   endpoint: string
   publicKey: Uint8Array
   tokenPrefix: string
+  workerRuntime?: string
+  workerVersion?: number
+  maxTokenTtlSeconds?: number
 }
 
 const v1Version = 'v1'
@@ -211,6 +217,13 @@ const contentTypeForFilename = (filename?: string | null) => {
   return undefined
 }
 
+const normalizedWorkerRuntime = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+
+const normalizedWorkerVersion = (value: unknown) => {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : undefined
+}
+
 export const normalizeWorkerBaseUrl = (value: unknown, label = 'Worker 代理端点') => {
   const raw = String(value ?? '').trim()
   if (!raw) return ''
@@ -267,17 +280,21 @@ export const getLinkProxyConfig = () => {
   const baseUrl = getSettingWithSource('linkProxyBaseUrl')
   const secret = getSettingWithSource('linkProxySecret')
   const v2Endpoints = getSettingWithSource('linkProxyV2Endpoints')
-  const resolvedVersion: LinkProxyVersion = version.value === 'v2' ? 'v2' : 'v1'
+  const configuredVersion: LinkProxyVersion = version.value === 'v2' ? 'v2' : version.value === 'v1' ? 'v1' : 'none'
+  const legacyV1FromEnv = configuredVersion === 'none' && version.source === 'default' && baseUrl.source === 'env' && secret.source === 'env' && Boolean(baseUrl.value && secret.value)
+  const resolvedVersion: LinkProxyVersion = legacyV1FromEnv ? 'v1' : configuredVersion
   const endpoints = resolvedVersion === 'v2' ? parseV2Endpoints(v2Endpoints.value) : []
   return {
     version: resolvedVersion,
+    configuredVersion,
+    legacyV1FromEnv,
     baseUrl: baseUrl.value,
     secret: secret.value,
     v2Endpoints: endpoints,
     baseUrlSource: baseUrl.source === 'database' ? 'admin' : baseUrl.source === 'default' ? 'none' : baseUrl.source,
     secretSource: secret.source === 'database' ? 'admin' : secret.source === 'default' ? 'none' : secret.source,
     v2EndpointsSource: v2Endpoints.source === 'database' ? 'admin' : v2Endpoints.source === 'default' ? 'none' : v2Endpoints.source,
-    enabled: resolvedVersion === 'v2' ? endpoints.length > 0 : Boolean(baseUrl.value && secret.value),
+    enabled: resolvedVersion === 'v2' ? endpoints.length > 0 : resolvedVersion === 'v1' ? Boolean(baseUrl.value && secret.value) : false,
   }
 }
 
@@ -297,7 +314,17 @@ const validateDiscovery = (endpoint: string, data: unknown): V2KeyInfo => {
   const publicKey = base64urlToBytes(discovery.publicKey)
   if (publicKey.length !== 32) throw new Error('publicKey 必须是 32 字节 base64url')
   const tokenPrefix = typeof discovery.tokenPrefix === 'string' && discovery.tokenPrefix.trim() ? discovery.tokenPrefix.trim() : `${endpoint}/lc/v2.x1.`
-  return { endpoint, publicKey, tokenPrefix }
+  const maxTokenTtlSeconds = Number(discovery.maxTokenTtlSeconds)
+  const workerRuntime = normalizedWorkerRuntime(discovery.workerRuntime)
+  const workerVersion = normalizedWorkerVersion(discovery.workerVersion)
+  return {
+    endpoint,
+    publicKey,
+    tokenPrefix,
+    ...(workerRuntime ? { workerRuntime } : {}),
+    ...(workerVersion ? { workerVersion } : {}),
+    ...(Number.isFinite(maxTokenTtlSeconds) && maxTokenTtlSeconds > 0 ? { maxTokenTtlSeconds: Math.floor(maxTokenTtlSeconds) } : {}),
+  }
 }
 
 export const discoverV2Endpoint = async (endpoint: string) => {

@@ -7,6 +7,7 @@ import { ensureSystemUser } from '../localUser'
 import { badRequest, upstreamError, unknownErrorMessage } from '../lib/errors'
 import { getLinkProxyConfig } from '../lib/linkProxy'
 import {
+  getDownloadSettings,
   getSettingBoolean,
   getSettingNumber,
   getSettingString,
@@ -15,7 +16,8 @@ import {
   settingKeys,
   setSetting,
 } from '../settings/service'
-import { agentClientVersion } from '../version'
+import { agentClientVersion, agentVersion } from '../version'
+import { config } from '../config'
 
 export type BrokerConfig = {
   baseUrl: string
@@ -306,6 +308,11 @@ const brokerHeaders = (configValue: BrokerConfig) => ({
   'Content-Type': 'application/json',
 })
 
+const brokerDraftHeaders = (agentToken: string) => ({
+  Authorization: `Bearer ${agentToken}`,
+  'Content-Type': 'application/json',
+})
+
 const brokerTimeoutError = (targetUrl: string) =>
   upstreamError('BROKER_REQUEST_TIMEOUT', `Broker 请求超过 ${Math.round(brokerRequestTimeoutMs / 1000)} 秒未响应`, {
     httpStatus: null,
@@ -360,7 +367,61 @@ const requestBrokerJson = async <T>(
   return json as T
 }
 
-const appErrorInfo = (error: unknown) => {
+export const verifyBrokerDraftConfig = async (input: { baseUrl: string; agentToken: string }) => {
+  const targetUrl = new URL('/api/lc/agent/heartbeat', input.baseUrl).toString()
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), brokerRequestTimeoutMs)
+  let response: Response
+  try {
+    response = await fetch(targetUrl, {
+      method: 'POST',
+      headers: brokerDraftHeaders(input.agentToken),
+      body: JSON.stringify({
+        available: true,
+        capabilities: buildCapabilities(),
+        client_version: agentClientVersion,
+        client_info: buildClientInfo(),
+      }),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    if (controller.signal.aborted) throw brokerTimeoutError(targetUrl)
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
+
+  const json = (await response.json().catch(() => null)) as Record<string, unknown> | null
+  if (!response.ok) {
+    throw upstreamError(
+      typeof json?.code === 'string' ? json.code : 'BROKER_VERIFY_FAILED',
+      typeof json?.message === 'string' ? json.message : `Broker 连接检测失败: ${response.status}`,
+      {
+        ...(json ?? {}),
+        httpStatus: response.status,
+        targetUrl,
+      },
+    )
+  }
+
+  const status = typeof json?.status === 'string' ? json.status : ''
+  if (status !== 'ok' && status !== 'too_early') {
+    throw upstreamError('BROKER_VERIFY_FAILED', status ? `Broker 返回未知状态: ${status}` : 'Broker 返回不是有效 heartbeat 响应', {
+      ...(json ?? {}),
+      httpStatus: response.status,
+      targetUrl,
+    })
+  }
+
+  return {
+    ok: true,
+    status,
+    nextPollAfter: Number.isFinite(Number(json?.next_poll_after)) ? Number(json?.next_poll_after) : null,
+    targetUrl,
+  }
+}
+
+export const appErrorInfo = (error: unknown) => {
   if (error && typeof error === 'object') {
     const code = 'code' in error && typeof error.code === 'string' ? error.code : null
     const message = 'message' in error && typeof error.message === 'string' ? error.message : null
@@ -553,12 +614,29 @@ const linkProxyFeatures = () => {
   return [`link_proxy:${proxy.version}`]
 }
 
-const buildCapabilities = () => {
+export const buildCapabilities = () => {
+  const features = linkProxyFeatures()
+  const resultLinkTtlSeconds = getDownloadSettings().linkCacheTtlSeconds
   return {
+    schemaVersion: 1,
     providers: ['baidu'],
-    features: linkProxyFeatures(),
+    features,
+    providerCapabilities: {
+      baidu: {
+        features,
+        resultLinkTtlSeconds,
+      },
+    },
   }
 }
+
+export const buildClientInfo = () => ({
+  name: 'lc-agent',
+  version: agentVersion,
+  runtime: config.desktopMode ? 'desktop' : 'daemon',
+  platform: process.platform,
+  arch: process.arch,
+})
 
 const runtimeStateFor = (broker = getBrokerConfig(), usableAccountCount = listLocallyAvailableAccounts().length) => {
   if (maintenanceStopping) return { state: 'maintenance_stopping' as const, message: '本地维护中，Broker 执行已暂停' }
@@ -621,6 +699,7 @@ export const heartbeatBroker = async () => {
         available: true,
         capabilities: buildCapabilities(),
         client_version: agentClientVersion,
+        client_info: buildClientInfo(),
       },
     })
     const tooEarly = String(response.status ?? '') === 'too_early'

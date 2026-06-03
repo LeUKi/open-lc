@@ -355,7 +355,7 @@ function RunTable({ runs, onOpenDetail }: { runs: BrokerRun[]; onOpenDetail: (ru
         {runs.map((run) => (
           <tr key={run.id}>
             <td className="p-3">
-              <MiddleEllipsis text={runTitle(run)} className="max-w-[320px] font-semibold" />
+              <MiddleEllipsis text={runTitle(run)} className="font-semibold" maxWidthPx={320} copyable={!run.payloadSummary?.fileName} />
               <div className="mt-1 text-xs text-slate-500">Task {run.taskId}</div>
               {run.payloadSummary ? (
                 <div className="mt-1 text-xs text-slate-500">

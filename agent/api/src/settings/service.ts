@@ -150,9 +150,9 @@ const definitions = {
     group: 'download',
     label: 'Worker 代理加密方式',
     type: 'string',
-    defaultValue: 'v1',
+    defaultValue: 'none',
     envName: agentEnvName('LINK_PROXY_VERSION'),
-    envValue: config.linkProxyVersion,
+    envValue: hasAgentEnv('LINK_PROXY_VERSION') ? config.linkProxyVersion : undefined,
     allowEmpty: true,
   },
   linkProxyBaseUrl: {
@@ -540,8 +540,8 @@ const parseEndpointList = (value: unknown) => {
 }
 
 const validateLinkProxyVersion = (value: unknown) => {
-  const version = String(value ?? '').trim() || 'v1'
-  if (version !== 'v1' && version !== 'v2') throw badRequest('BAD_LINK_PROXY_VERSION', 'Worker 代理加密方式只支持 v1 或 v2')
+  const version = String(value ?? '').trim() || 'none'
+  if (version !== 'none' && version !== 'v1' && version !== 'v2') throw badRequest('BAD_LINK_PROXY_VERSION', 'Worker 代理加密方式只支持无、v1 或 v2')
   return version
 }
 
@@ -574,8 +574,22 @@ const displayValue = (definition: SettingDefinition, value: string) => {
   return value ? '已设置' : '未设置'
 }
 
+const legacyV1ProxyFromEnv = () => {
+  const version = valueWithSource(definitions.linkProxyVersion)
+  if (version.value !== 'none' || version.source !== 'default') return false
+  const baseUrl = valueWithSource(definitions.linkProxyBaseUrl)
+  const secret = valueWithSource(definitions.linkProxySecret)
+  return baseUrl.source === 'env' && secret.source === 'env' && Boolean(baseUrl.value && secret.value)
+}
+
+const effectiveSettingValue = (name: SettingName, current: { value: string; source: SettingSource }) => {
+  if (name === 'linkProxyVersion' && legacyV1ProxyFromEnv()) return 'v1'
+  return current.value
+}
+
 const publicDefinition = (name: SettingName, definition: SettingDefinition) => {
   const current = valueWithSource(definition)
+  const value = effectiveSettingValue(name, current)
   return {
     name,
     key: definition.key,
@@ -583,8 +597,8 @@ const publicDefinition = (name: SettingName, definition: SettingDefinition) => {
     label: definition.label,
     type: definition.type,
     envName: definition.envName,
-    value: publicValue(definition, current.value),
-    displayValue: displayValue(definition, current.value),
+    value: publicValue(definition, value),
+    displayValue: displayValue(definition, value),
     source: current.source,
     sensitive: definition.sensitive === true,
     editable: definition.editable !== false,
@@ -628,6 +642,13 @@ const publicKeyFingerprint = (value: string) => {
   return createHash('sha256').update(Buffer.from(padded, 'base64')).digest('hex').slice(0, 16)
 }
 
+const normalizedWorkerRuntime = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+
+const normalizedWorkerVersion = (value: unknown) => {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : undefined
+}
+
 const verifyV2Endpoint = async (endpoint: string) => {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 5000)
@@ -638,9 +659,20 @@ const verifyV2Endpoint = async (endpoint: string) => {
       signal: controller.signal,
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    const data = (await response.json()) as { version?: unknown; kid?: unknown; publicKey?: unknown; tokenPrefix?: unknown }
+    const data = (await response.json()) as {
+      version?: unknown
+      kid?: unknown
+      publicKey?: unknown
+      tokenPrefix?: unknown
+      workerRuntime?: unknown
+      workerVersion?: unknown
+      maxTokenTtlSeconds?: unknown
+    }
     if (data.version !== 'v2' || data.kid !== 'x1') throw new Error('版本或 key id 不匹配')
     if (typeof data.publicKey !== 'string' || !validateV2PublicKey(data.publicKey)) throw new Error('publicKey 无效')
+    const maxTokenTtlSeconds = Number(data.maxTokenTtlSeconds)
+    const workerRuntime = normalizedWorkerRuntime(data.workerRuntime)
+    const workerVersion = normalizedWorkerVersion(data.workerVersion)
     return {
       endpoint,
       kid: data.kid,
@@ -648,6 +680,9 @@ const verifyV2Endpoint = async (endpoint: string) => {
       publicKeyPreview: `${data.publicKey.slice(0, 12)}...${data.publicKey.slice(-8)}`,
       publicKeyFingerprint: publicKeyFingerprint(data.publicKey),
       tokenPrefix: typeof data.tokenPrefix === 'string' && data.tokenPrefix.trim() ? data.tokenPrefix.trim() : `${endpoint}/lc/v2.x1.`,
+      ...(workerRuntime ? { workerRuntime } : {}),
+      ...(workerVersion ? { workerVersion } : {}),
+      ...(Number.isFinite(maxTokenTtlSeconds) && maxTokenTtlSeconds > 0 ? { maxTokenTtlSeconds: Math.floor(maxTokenTtlSeconds) } : {}),
     }
   } finally {
     clearTimeout(timeout)
@@ -720,7 +755,8 @@ export const getSettingsSnapshot = () => {
   const values = Object.fromEntries(
     Object.entries(definitions).map(([name, definition]) => {
       const current = valueWithSource(definition)
-      return [name, publicValue(definition, current.value)]
+      const value = effectiveSettingValue(name as SettingName, current)
+      return [name, publicValue(definition, value)]
     }),
   ) as Record<SettingName, string>
   const sources = Object.fromEntries(

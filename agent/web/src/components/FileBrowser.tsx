@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { useAtom, useSetAtom } from 'jotai'
-import { CheckSquare, ChevronDown, ChevronRight, Download, File, Folder, Loader2, RefreshCw, Square, HardDrive, Link2, ListChecks, X } from 'lucide-react'
+import { CheckSquare, ChevronDown, ChevronRight, Download, File, Folder, FolderOpen, Loader2, RefreshCw, Square, HardDrive, Link2, ListChecks, Sparkles, X } from 'lucide-react'
 import { api, honoClient, messageFromError, type LocalAccount, type ParseJob, type ShareFile } from '../api'
 import {
   diskFilesAtom,
@@ -49,6 +49,7 @@ type ShareDirectoryIssue = {
   message: string
   dir: string
   options?: LoadDirectoryOptions
+  kind: 'credential' | 'path' | 'other'
 }
 
 function ModeSegmentedControl({ value, onChange }: { value: 'share' | 'disk'; onChange: (value: 'share' | 'disk') => void }) {
@@ -112,6 +113,8 @@ const treeIndentPx = (depth: number) => depth * 22
 
 const directoryFiles = (node?: DirectoryNode) => (node?.files ?? []).filter((item) => !item.is_dir)
 
+const canNavigateBreadcrumb = (path: string, nodes: Record<string, DirectoryNode>) => path === '/' || Boolean(nodes[path]?.loaded && !nodes[path]?.error)
+
 const resolveMergedDirectory = (file: ShareFile, parentDir: string, nodes: Record<string, DirectoryNode>): MergedDirectoryView => {
   let label = file.server_filename
   let dir = directoryPathFor(file, parentDir)
@@ -132,26 +135,51 @@ const collapseBreadcrumbs = (dir: string, nodes: Record<string, DirectoryNode>) 
   if (parts.length <= 2) return parts
 
   const merged = [parts[0]]
+  let hiddenSegments: string[] = []
   for (let index = 1; index < parts.length; index += 1) {
     const current = parts[index]
-    const parent = parts[index - 1]
-    const parentNode = nodes[parent.path]
-    const singleChild =
-      parentNode?.loaded && parentNode.files.length === 1 && parentNode.files[0]?.is_dir ? directoryPathFor(parentNode.files[0], parent.path) : null
-    const previous = merged[merged.length - 1]
+    if (!canNavigateBreadcrumb(current.path, nodes)) {
+      hiddenSegments.push(current.label)
+      continue
+    }
 
-    if (previous.path !== '/' && singleChild === current.path) {
+    const label = hiddenSegments.length > 0 ? `${hiddenSegments.join('/')}/${current.label}` : current.label
+    hiddenSegments = []
+    const previous = merged[merged.length - 1]
+    if (previous.path !== '/' && previous.path === current.path) {
       merged[merged.length - 1] = {
-        label: `${previous.label}/${current.label}`,
+        label: `${previous.label}/${label}`,
         path: current.path,
       }
       continue
     }
 
-    merged.push(current)
+    merged.push({ label, path: current.path })
+  }
+
+  if (hiddenSegments.length > 0) {
+    merged.push({
+      label: hiddenSegments.join('/'),
+      path: dir,
+    })
   }
 
   return merged
+}
+
+const shareDirectoryIssueFromError = (error: unknown): Pick<ShareDirectoryIssue, 'message' | 'kind'> => {
+  const message = messageFromError(error, '获取文件列表失败')
+  if (message.includes('路径错误')) {
+    return {
+      kind: 'path',
+      message: '该目录路径无法直接读取，请从上级目录重新进入。',
+    }
+  }
+  if (message.includes('提取码错误')) return { kind: 'credential', message }
+  if (message.includes('Cookie') || message.includes('响应格式异常') || message.includes('上游') || message.includes('请求失败')) {
+    return { kind: 'credential', message }
+  }
+  return { kind: 'other', message }
 }
 
 export function ParserWorkspace() {
@@ -183,6 +211,11 @@ export function ParserWorkspace() {
   const executionCount = queue.length + results.length
   const downloaders = parseDownloaders(settingsQuery.data?.data.items.downloadersJson?.value)
   const fakeCookieTemplate = shareCookieTemplateQuery.data?.data.fakeCookie ?? ''
+  const cookieModalIsContinuation = Boolean(pendingShareDirectoryLoad)
+  const cookieModalTitle = cookieModalIsContinuation ? '继续读取分享目录' : '目录访问设置'
+  const cookieModalDescription = cookieModalIsContinuation
+    ? '为了获取分享目录中的文件列表，需要补充请求所需的访问凭证。'
+    : '这里可以更新用于读取分享目录文件列表的访问凭证。'
   const queueRef = useRef(queue)
 
   useEffect(() => {
@@ -315,6 +348,12 @@ export function ParserWorkspace() {
     setCookieModalOpen(true)
   }
 
+  const navigateToIssueParent = async (issue: ShareDirectoryIssue) => {
+    const parent = pathParts(issue.dir).at(-2)?.path ?? '/'
+    setShareDirectoryIssue(null)
+    await loadDirectory(parent)
+  }
+
   const loadShareDirectoryWithCookie = async (dir: string, options: LoadDirectoryOptions | undefined, cookie: string) => {
     const shareUrl = context.shareUrl.trim()
     if (!shareUrl) {
@@ -379,19 +418,20 @@ export function ParserWorkspace() {
       }
       setShareDirectoryIssue(null)
     } catch (error) {
-      const message = messageFromError(error, '获取文件列表失败')
+      const issueDetail = shareDirectoryIssueFromError(error)
       const issue = {
-        message,
+        message: issueDetail.message,
+        kind: issueDetail.kind,
         dir,
         options,
       }
       setNode(dir, (node) => ({
         ...node,
         loading: false,
-        error: message,
+        error: issueDetail.message,
       }))
       setShareDirectoryIssue(issue)
-      setError(message)
+      setError(issueDetail.message)
     }
   }
 
@@ -775,13 +815,13 @@ export function ParserWorkspace() {
                 ) : context.mode === 'disk' ? (
                   <HardDrive className="size-4" />
                 ) : (
-                  <Link2 className="size-4" />
+                  <FolderOpen className="size-4" />
                 )}
-                {context.mode === 'disk' ? '读取网盘目录' : '获取分享文件'}
+                {context.mode === 'disk' ? '读取网盘目录' : '读取分享目录'}
               </Button>
               {context.mode === 'share' ? (
                 <Button onClick={openCookieManager} variant="secondary">
-                  管理 Cookie
+                  目录访问设置
                 </Button>
               ) : null}
               <Button
@@ -820,9 +860,19 @@ export function ParserWorkspace() {
                   <div className="font-bold">分享目录读取失败</div>
                   <div>{shareDirectoryIssue.message}</div>
                 </div>
-                <Button className="shrink-0" onClick={() => openCookieRetryModal(shareDirectoryIssue)} size="sm" variant="secondary">
-                  修改 Cookie
-                </Button>
+                {shareDirectoryIssue.kind === 'path' ? (
+                  <Button className="shrink-0" onClick={() => void navigateToIssueParent(shareDirectoryIssue)} size="sm" variant="secondary">
+                    返回上级目录
+                  </Button>
+                ) : shareDirectoryIssue.kind === 'credential' ? (
+                  <Button className="shrink-0" onClick={() => openCookieRetryModal(shareDirectoryIssue)} size="sm" variant="secondary">
+                    更新访问凭证
+                  </Button>
+                ) : (
+                  <Button className="shrink-0" onClick={() => void loadDirectory(shareDirectoryIssue.dir, shareDirectoryIssue.options)} size="sm" variant="secondary">
+                    重试
+                  </Button>
+                )}
               </div>
             ) : null}
           </div>
@@ -853,14 +903,14 @@ export function ParserWorkspace() {
         onClose={() => setExecutionOpen(false)}
       />
       <Modal
-        description="这个 Cookie 只用于读取百度网盘分享目录，并会保存在当前浏览器的本地存储中，后续目录请求会优先使用这里填写的值。"
+        description={cookieModalDescription}
         maxWidthClassName="max-w-3xl"
         onClose={closeCookieModal}
         open={cookieModalOpen}
-        title="填写分享目录 Cookie"
+        title={cookieModalTitle}
       >
         <div className="grid gap-4">
-          <Field label="Cookie" hint={pendingShareDirectoryLoad ? '填写后点击保存并继续，当前这次目录读取会立即使用新的 Cookie。' : '填写后点击保存，后续目录请求会使用新的 Cookie。'}>
+          <Field label="Cookie" hint={pendingShareDirectoryLoad ? '填写后点击保存并继续，当前这次目录读取会立即重试。' : '填写后点击保存即可更新。'}>
             <Textarea
               className="min-h-20 w-full min-w-0 resize-y font-mono text-xs"
               onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
@@ -873,22 +923,24 @@ export function ParserWorkspace() {
           {cookieDraftError ? <div className="text-sm font-semibold text-red-600">{cookieDraftError}</div> : null}
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">
             <div className="font-bold">合规提示</div>
-            <div>请仅填写通过合法合规渠道取得、且你有权用于读取该分享目录的 Cookie。不要填写他人账号、来源不明账号或未经授权的 Cookie。</div>
+            <div>请仅填写通过合法合规渠道取得、且你有权用于读取该分享目录的 Cookie。一般不建议填写他人账号、来源不明账号或未经授权的 Cookie。</div>
           </div>
           <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-sm font-semibold text-slate-700">来源未知的内置示例 Cookie</div>
-              <Button
+              <button
+                className="bling-fill-button group relative inline-flex min-h-8 max-w-full items-center justify-center gap-1.5 overflow-visible rounded-md bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm shadow-indigo-500/30 outline-none transition hover:from-blue-500 hover:via-indigo-500 hover:to-violet-500 hover:shadow-md hover:shadow-indigo-500/40 focus-visible:ring-2 focus-visible:ring-indigo-200 disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={shareCookieTemplateQuery.isPending || !fakeCookieTemplate}
                 onClick={() => {
                   setCookieDraft(fakeCookieTemplate)
                   if (cookieDraftError) setCookieDraftError(null)
                 }}
-                size="sm"
-                variant="secondary"
+                type="button"
               >
-                一键填充
-              </Button>
+                <span className="bling-fill-glow absolute inset-0 -z-10 rounded-md bg-indigo-400/30 blur-md group-disabled:hidden" />
+                <Sparkles className="bling-fill-sparkle size-3.5" />
+                一键填充示例
+              </button>
             </div>
             <Textarea
               className="min-h-16 w-full min-w-0 resize-y font-mono text-xs text-slate-600"
@@ -914,9 +966,9 @@ export function ParserWorkspace() {
 function BrowserHeader({ dir, nodes, onNavigate }: { dir: string; nodes: Record<string, DirectoryNode>; onNavigate: (dir: string) => Promise<void> }) {
   const crumbs = collapseBreadcrumbs(dir, nodes)
   return (
-    <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+    <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-50 px-3 py-2 text-sm max-[768px]:flex-nowrap max-[768px]:overflow-x-auto max-[768px]:px-2 mobile-scrollbar-none">
       {crumbs.map((item, index) => (
-        <div className="flex items-center gap-1" key={item.path}>
+        <div className="flex min-w-0 shrink-0 items-center gap-1" key={item.path}>
           {index > 0 ? <ChevronRight className="size-4 text-slate-400" /> : null}
           <button
             className={`min-w-0 rounded px-2 py-1 font-semibold ${item.path === dir ? 'text-slate-900' : 'text-blue-700 hover:bg-blue-50'}`}
@@ -924,7 +976,7 @@ function BrowserHeader({ dir, nodes, onNavigate }: { dir: string; nodes: Record<
             type="button"
             onClick={() => onNavigate(item.path)}
           >
-            {item.label === '全部文件' ? item.label : <MiddleEllipsis text={item.label} className="max-w-[220px]" />}
+            {item.label === '全部文件' ? item.label : <MiddleEllipsis text={item.label} maxWidthPx={220} mobileMaxWidthPx={140} />}
           </button>
         </div>
       ))}
