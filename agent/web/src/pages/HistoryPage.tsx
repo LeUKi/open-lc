@@ -309,7 +309,13 @@ export function HistoryPage() {
                           </>
                         ) : null}
                         {record.resultUa ? (
-                          <CopyButton value={record.resultUa} icon={<Clipboard className="size-4" />} label="复制 UA" onCopyFailed={notifyCopyFailed} size="sm" />
+                          <CopyButton
+                            value={record.resultUa}
+                            icon={<Clipboard className="size-4" />}
+                            label="复制 UA"
+                            onCopyFailed={notifyCopyFailed}
+                            size="sm"
+                          />
                         ) : null}
                         <Button onClick={() => setSelectedRecordId(record.id)} size="sm" variant="secondary">
                           <Eye className="size-4" />

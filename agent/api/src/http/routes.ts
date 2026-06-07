@@ -609,7 +609,11 @@ export const typedRoutes = new Hono<AgentEnv>()
         code: 'OK',
         data: {
           ...data,
-          urls: await Promise.all(data.urls.map((url) => createProxiedDownloadUrl(url, { filename: body.filename, expiresAt: data.link_expires_at ? new Date(data.link_expires_at) : null, context }))),
+          urls: await Promise.all(
+            data.urls.map((url) =>
+              createProxiedDownloadUrl(url, { filename: body.filename, expiresAt: data.link_expires_at ? new Date(data.link_expires_at) : null, context }),
+            ),
+          ),
           record_id: Number(recordId),
         },
       })

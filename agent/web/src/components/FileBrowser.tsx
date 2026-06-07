@@ -1,6 +1,22 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { useAtom, useSetAtom } from 'jotai'
-import { CheckSquare, ChevronDown, ChevronRight, Download, File, Folder, FolderOpen, Loader2, RefreshCw, Square, HardDrive, Link2, ListChecks, Sparkles, X } from 'lucide-react'
+import {
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  File,
+  Folder,
+  FolderOpen,
+  Loader2,
+  RefreshCw,
+  Square,
+  HardDrive,
+  Link2,
+  ListChecks,
+  Sparkles,
+  X,
+} from 'lucide-react'
 import { api, honoClient, messageFromError, type LocalAccount, type ParseJob, type ShareFile } from '../api'
 import {
   diskFilesAtom,
@@ -869,7 +885,12 @@ export function ParserWorkspace() {
                     更新访问凭证
                   </Button>
                 ) : (
-                  <Button className="shrink-0" onClick={() => void loadDirectory(shareDirectoryIssue.dir, shareDirectoryIssue.options)} size="sm" variant="secondary">
+                  <Button
+                    className="shrink-0"
+                    onClick={() => void loadDirectory(shareDirectoryIssue.dir, shareDirectoryIssue.options)}
+                    size="sm"
+                    variant="secondary"
+                  >
                     重试
                   </Button>
                 )}
@@ -902,13 +923,7 @@ export function ParserWorkspace() {
         onDeleteWaitingItem={deleteWaitingQueueItem}
         onClose={() => setExecutionOpen(false)}
       />
-      <Modal
-        description={cookieModalDescription}
-        maxWidthClassName="max-w-3xl"
-        onClose={closeCookieModal}
-        open={cookieModalOpen}
-        title={cookieModalTitle}
-      >
+      <Modal description={cookieModalDescription} maxWidthClassName="max-w-3xl" onClose={closeCookieModal} open={cookieModalOpen} title={cookieModalTitle}>
         <div className="grid gap-4">
           <Field label="Cookie" hint={pendingShareDirectoryLoad ? '填写后点击保存并继续，当前这次目录读取会立即重试。' : '填写后点击保存即可更新。'}>
             <Textarea

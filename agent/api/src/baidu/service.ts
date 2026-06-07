@@ -197,13 +197,7 @@ const isSharePathError = (error: unknown) => {
   return info.code === 'GET_FILE_LIST_FAILED' && info.message.includes('路径错误')
 }
 
-const getShareForParse = async (params: {
-  surl: string
-  pwd?: string
-  dir?: string
-  fsIds: number[]
-  jobId?: number
-}) => {
+const getShareForParse = async (params: { surl: string; pwd?: string; dir?: string; fsIds: number[]; jobId?: number }) => {
   const requestedDir = params.dir?.trim() || '/'
   try {
     const share = await client.getFileList({
@@ -309,7 +303,9 @@ const serializeRecord = async (record: ParseRecord, context: LinkProxyContext = 
       : record.parseRoute
         ? `${record.credentialSource}.${record.parseRoute}`
         : '-',
-    resultUrl: record.resultUrl ? await createProxiedDownloadUrl(record.resultUrl, { filename: record.filename, expiresAt: record.linkExpiresAt, context }) : record.resultUrl,
+    resultUrl: record.resultUrl
+      ? await createProxiedDownloadUrl(record.resultUrl, { filename: record.filename, expiresAt: record.linkExpiresAt, context })
+      : record.resultUrl,
     linkExpired: record.linkExpiresAt ? record.linkExpiresAt.getTime() <= Date.now() : true,
   }
 }
@@ -954,11 +950,7 @@ const deleteTempPathsByAccessToken = async (params: {
   }
 }
 
-const deleteTempFileWithAccount = async (params: {
-  item: typeof baiduTempFiles.$inferSelect
-  account: BaiduAccount
-  bdstoken?: string
-}) => {
+const deleteTempFileWithAccount = async (params: { item: typeof baiduTempFiles.$inferSelect; account: BaiduAccount; bdstoken?: string }) => {
   if (params.account.credentialSource === 'open_platform') {
     await deleteTempPathsByAccessToken({
       tempId: params.item.id,
@@ -1532,7 +1524,10 @@ export const parseLinksForBroker = async (
   return [await toParsedLink(result)]
 }
 
-const toParsedLink = async (result: ParseExecutionResult, context: LinkProxyContext = createLinkProxyContext()): Promise<ParsedLink & Record<string, unknown>> => ({
+const toParsedLink = async (
+  result: ParseExecutionResult,
+  context: LinkProxyContext = createLinkProxyContext(),
+): Promise<ParsedLink & Record<string, unknown>> => ({
   message: 'success',
   filename: result.filename,
   fs_id: result.fsId,
@@ -2155,7 +2150,9 @@ const tempFileSnapshot = (item: typeof baiduTempFiles.$inferSelect) => ({
   errorMessage: item.errorMessage,
 })
 
-const serializeCleanupRunResult = (run: Pick<TempFileCleanupRun, 'attempted' | 'deleted' | 'failed' | 'skipped' | 'orphan' | 'waitingForExpiry' | 'firstError'>) => ({
+const serializeCleanupRunResult = (
+  run: Pick<TempFileCleanupRun, 'attempted' | 'deleted' | 'failed' | 'skipped' | 'orphan' | 'waitingForExpiry' | 'firstError'>,
+) => ({
   attempted: run.attempted,
   deleted: run.deleted,
   failed: run.failed,
@@ -2165,9 +2162,7 @@ const serializeCleanupRunResult = (run: Pick<TempFileCleanupRun, 'attempted' | '
   firstError: run.firstError,
 })
 
-const serializeCleanupRun = (
-  run: TempFileCleanupRun,
-): TempFileCleanupSummary['recentRuns'][number] => ({
+const serializeCleanupRun = (run: TempFileCleanupRun): TempFileCleanupSummary['recentRuns'][number] => ({
   id: run.id,
   trigger: run.trigger,
   status: run.status,
@@ -2213,7 +2208,14 @@ const updateTempCleanupRunProgress = (runId: number, progress: Partial<Omit<Temp
   db.update(tempFileCleanupRuns).set(patch).where(eq(tempFileCleanupRuns.id, runId)).run()
 }
 
-const finishTempCleanupRun = (runId: number, status: 'success' | 'failed', result: TempFileCleanupResult, finishedAt: Date, processed: number, totalCandidates: number) => {
+const finishTempCleanupRun = (
+  runId: number,
+  status: 'success' | 'failed',
+  result: TempFileCleanupResult,
+  finishedAt: Date,
+  processed: number,
+  totalCandidates: number,
+) => {
   db.update(tempFileCleanupRuns)
     .set({
       status,

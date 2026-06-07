@@ -111,8 +111,12 @@ function TempFileList({ tempFiles }: { tempFiles: LocalHistoryDetail['tempFiles'
               <StatusBadge status={item.status} />
               <span className="text-sm font-semibold text-slate-900">#{item.id}</span>
               <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">失败 {item.retryCount} 次</span>
-              {item.autoCleanupSkipped ? <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">定时清理已跳过</span> : null}
-              {item.manualCleanupSkipped ? <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">手动清理也会跳过</span> : null}
+              {item.autoCleanupSkipped ? (
+                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">定时清理已跳过</span>
+              ) : null}
+              {item.manualCleanupSkipped ? (
+                <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-semibold text-red-700">手动清理也会跳过</span>
+              ) : null}
               {item.orphan ? <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">孤儿文件</span> : null}
             </div>
             <span className="text-xs text-slate-500">{formatDateTime(item.updatedAt)}</span>

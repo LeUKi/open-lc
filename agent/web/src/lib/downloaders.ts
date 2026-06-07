@@ -184,7 +184,10 @@ export const downloaderTargetDir = (downloader: Pick<DownloaderConfig, 'download
   return `${base}/${relative}`
 }
 
-export const downloaderRequestOptions = (downloader: Pick<DownloaderConfig, 'downloadDir' | 'preserveSourceDir'>, item: Pick<DownloadableItem, 'filename' | 'sourceDir'>) => {
+export const downloaderRequestOptions = (
+  downloader: Pick<DownloaderConfig, 'downloadDir' | 'preserveSourceDir'>,
+  item: Pick<DownloadableItem, 'filename' | 'sourceDir'>,
+) => {
   const targetDir = downloaderTargetDir(downloader, item)
   const relative = downloader.preserveSourceDir && !targetDir ? safeRelativeSourceDir(item.sourceDir) : ''
   return {
@@ -193,7 +196,11 @@ export const downloaderRequestOptions = (downloader: Pick<DownloaderConfig, 'dow
   }
 }
 
-const sendToAria2CompatibleDownloader = async (downloader: DownloaderConfig, item: DownloadableItem, requestOptions: ReturnType<typeof downloaderRequestOptions>) => {
+const sendToAria2CompatibleDownloader = async (
+  downloader: DownloaderConfig,
+  item: DownloadableItem,
+  requestOptions: ReturnType<typeof downloaderRequestOptions>,
+) => {
   const options: Record<string, unknown> = {
     out: requestOptions.out,
   }

@@ -191,7 +191,7 @@ const definitions = {
     group: 'download',
     label: '链接有效期秒数',
     type: 'number',
-    defaultValue: String(60 * 60),
+    defaultValue: String(6 * 60 * 60),
     envName: agentEnvName('LINK_CACHE_TTL_SECONDS'),
     envValue: hasAgentEnv('LINK_CACHE_TTL_SECONDS') ? String(config.linkCacheTtlSeconds) : undefined,
     min: 60,

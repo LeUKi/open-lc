@@ -780,7 +780,7 @@ const submitSuccess = async (participationId: string, first: Record<string, unkn
     body: {
       type: 'success',
       result_url: String(Array.isArray(first.urls) ? (first.urls[0] ?? '') : ''),
-      expires_at: String(first.link_expires_at ?? new Date(Date.now() + 3600 * 1000).toISOString()),
+      expires_at: String(first.link_expires_at ?? new Date(Date.now() + getDownloadSettings().linkCacheTtlSeconds * 1000).toISOString()),
       headers: {
         'User-Agent': String(first.ua ?? ''),
       },

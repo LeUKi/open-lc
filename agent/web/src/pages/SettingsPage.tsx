@@ -52,6 +52,7 @@ type WorkerHelpTab = 'quick' | 'manual' | 'esa'
 type WorkerConfigVersion = 'none' | 'v1' | 'v2'
 type WorkerWizardStep = 'version' | 'form' | 'verify' | 'save'
 type BrokerWizardStep = 'mode' | 'form' | 'verify' | 'save'
+type LinkTtlChoice = 'default' | 'fixed' | 'custom'
 
 const downloaderPresets = ['motrix', 'motrix-next', 'tauri-motrix', 'abdm', 'aria2'] as const satisfies readonly DownloaderPreset[]
 
@@ -72,6 +73,13 @@ const settingsActionCellClassName =
 const settingsActionButtonClassName = 'w-full sm:w-auto'
 const settingsCardClassName = 'overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm shadow-slate-200/50'
 const defaultWorkerMaxTokenTtlSeconds = 86_400
+const linkTtlFixedOptions = [
+  { value: 3600, label: '1 小时' },
+  { value: 4 * 60 * 60, label: '4 小时' },
+  { value: 6 * 60 * 60, label: '6 小时' },
+  { value: 12 * 60 * 60, label: '12 小时' },
+  { value: 24 * 60 * 60, label: '24 小时' },
+] as const
 
 type WorkerTtlLimit = {
   endpoint: string
@@ -94,6 +102,11 @@ type BrokerWizardVerifyResult = BrokerVerifyResult & {
 
 type PendingLinkTtlConfirm = {
   setting: AgentSetting
+  value: string
+  risk: LinkCacheTtlRisk
+} | null
+
+type PendingLinkTtlWizardConfirm = {
   value: string
   risk: LinkCacheTtlRisk
 } | null
@@ -161,7 +174,13 @@ const settingsCount = (settings: AgentSettings | undefined, groups: SettingsGrou
 const visibleSettings = (items: AgentSetting[]) => items.filter((item) => item.name !== 'downloadersJson')
 const workerWizardSettingNames = new Set(['linkProxyBaseUrl', 'linkProxySecret', 'linkProxyV2Endpoints'])
 const visibleDownloadSettings = (items: AgentSetting[]) => visibleSettings(items).filter((item) => !workerWizardSettingNames.has(item.name))
-const brokerWizardSettingNames = new Set(['brokerBaseUrl', 'brokerAgentToken', 'brokerHeartbeatIntervalSeconds', 'brokerPollIntervalSeconds', 'brokerMaxConcurrentRuns'])
+const brokerWizardSettingNames = new Set([
+  'brokerBaseUrl',
+  'brokerAgentToken',
+  'brokerHeartbeatIntervalSeconds',
+  'brokerPollIntervalSeconds',
+  'brokerMaxConcurrentRuns',
+])
 const visibleBrokerSettings = (items: AgentSetting[]) => items.filter((item) => !brokerWizardSettingNames.has(item.name))
 
 const normalizeWorkerConfigVersion = (value: unknown): WorkerConfigVersion => {
@@ -223,6 +242,23 @@ const buildLinkCacheTtlRisk = (version: string, ttlSeconds: number | null, worke
     message: `当前链接有效期 ${ttlSeconds} 秒超过 Worker 默认上限 ${defaultWorkerMaxTokenTtlSeconds} 秒。`,
     description: '当前未检测到 Worker 返回 maxTokenTtlSeconds。如果 Worker 仍使用默认 MAX_TOKEN_TTL_SECONDS，v2 加密结果链接访问会返回 forbidden。',
   }
+}
+
+const ttlLabel = (seconds: number | null) => {
+  if (seconds === null) return '未知'
+  if (seconds >= 86_400 && seconds % 86_400 === 0) return `${seconds / 86_400} 天`
+  if (seconds >= 3600 && seconds % 3600 === 0) return `${seconds / 3600} 小时`
+  if (seconds >= 60 && seconds % 60 === 0) return `${seconds / 60} 分钟`
+  return `${seconds} 秒`
+}
+
+const linkTtlSourceLabel = (setting?: AgentSetting) => {
+  const value = parsePositiveInteger(setting?.value)
+  const label = ttlLabel(value)
+  if (!setting) return '当前：未知'
+  if (setting.source === 'database') return `当前：固定配置（${label}）`
+  if (setting.source === 'env') return `当前：环境变量（${label}）`
+  return `当前：默认值（${label}）`
 }
 
 const riskConsentTypeForSettingToggle = (setting: AgentSetting, nextValue: string, consents?: Record<RiskConsentType, boolean>): RiskConsentType | null => {
@@ -373,7 +409,7 @@ function SettingRow({
         {helper}
       </div>
       <div className={settingsActionCellClassName}>
-        {setting.editable && setting.type !== 'boolean' ? (
+        {setting.editable && setting.type !== 'boolean' && setting.name !== 'linkCacheTtlSeconds' ? (
           <>
             {setting.name === 'linkProxyVersion' ? null : (
               <Button className={settingsActionButtonClassName} disabled={pending} onClick={() => onSave(setting)} size="sm">
@@ -734,25 +770,62 @@ function BrokerConfigWizard({
           <div className="grid gap-4">
             <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
               Broker Base URL
-              <input className={settingsInputClassName} disabled={pending} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://broker.example.com" value={baseUrl} />
+              <input
+                className={settingsInputClassName}
+                disabled={pending}
+                onChange={(event) => setBaseUrl(event.target.value)}
+                placeholder="https://broker.example.com"
+                value={baseUrl}
+              />
             </label>
             <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
               Agent Token
-              <input className={settingsInputClassName} disabled={pending} onChange={(event) => setAgentToken(event.target.value)} placeholder="从 Broker 后台 Agent 页面复制" type="password" value={agentToken} />
+              <input
+                className={settingsInputClassName}
+                disabled={pending}
+                onChange={(event) => setAgentToken(event.target.value)}
+                placeholder="从 Broker 后台 Agent 页面复制"
+                type="password"
+                value={agentToken}
+              />
               <span className="text-xs font-medium leading-5 text-slate-500">Agent Token 不会回显；启用或修改 Broker 连接时需要重新填写。</span>
             </label>
             <div className="grid gap-3 md:grid-cols-3">
               <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
                 Heartbeat 间隔秒数
-                <input className={settingsInputClassName} disabled={pending} min={5} max={3600} onChange={(event) => setHeartbeatIntervalSeconds(event.target.value)} type="number" value={heartbeatIntervalSeconds} />
+                <input
+                  className={settingsInputClassName}
+                  disabled={pending}
+                  min={5}
+                  max={3600}
+                  onChange={(event) => setHeartbeatIntervalSeconds(event.target.value)}
+                  type="number"
+                  value={heartbeatIntervalSeconds}
+                />
               </label>
               <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
                 Poll 间隔秒数
-                <input className={settingsInputClassName} disabled={pending} min={3} max={3600} onChange={(event) => setPollIntervalSeconds(event.target.value)} type="number" value={pollIntervalSeconds} />
+                <input
+                  className={settingsInputClassName}
+                  disabled={pending}
+                  min={3}
+                  max={3600}
+                  onChange={(event) => setPollIntervalSeconds(event.target.value)}
+                  type="number"
+                  value={pollIntervalSeconds}
+                />
               </label>
               <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
                 最大并发 Runs
-                <input className={settingsInputClassName} disabled={pending} min={1} max={5} onChange={(event) => setMaxConcurrentRuns(event.target.value)} type="number" value={maxConcurrentRuns} />
+                <input
+                  className={settingsInputClassName}
+                  disabled={pending}
+                  min={1}
+                  max={5}
+                  onChange={(event) => setMaxConcurrentRuns(event.target.value)}
+                  type="number"
+                  value={maxConcurrentRuns}
+                />
               </label>
             </div>
           </div>
@@ -773,9 +846,13 @@ function BrokerConfigWizard({
                   检测通过：Broker 返回 {verifyResult.status === 'too_early' ? 'too_early，连接和 Token 有效' : 'ok'}。
                 </div>
               ) : verifyResult.ok ? (
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">配置内容已修改，请重新检测。</div>
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">
+                  配置内容已修改，请重新检测。
+                </div>
               ) : (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">检测失败：{verifyResult.error ?? 'Broker 连接检测失败'}</div>
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+                  检测失败：{verifyResult.error ?? 'Broker 连接检测失败'}
+                </div>
               )
             ) : null}
           </div>
@@ -788,7 +865,9 @@ function BrokerConfigWizard({
             {enabled ? (
               <>
                 <div className="break-all">Broker Base URL：{draftValues.brokerBaseUrl}</div>
-                <div>Heartbeat / Poll：{draftValues.brokerHeartbeatIntervalSeconds}s / {draftValues.brokerPollIntervalSeconds}s</div>
+                <div>
+                  Heartbeat / Poll：{draftValues.brokerHeartbeatIntervalSeconds}s / {draftValues.brokerPollIntervalSeconds}s
+                </div>
                 <div>最大并发 Runs：{draftValues.brokerMaxConcurrentRuns}</div>
               </>
             ) : (
@@ -1016,7 +1095,11 @@ function WorkerConfigWizard({
               <div className="grid gap-1.5 text-sm font-semibold text-slate-700">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <span>Worker v2 代理端点</span>
-                  <button className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs font-semibold text-blue-600 transition hover:bg-blue-50 hover:text-blue-700" onClick={onOpenHelp} type="button">
+                  <button
+                    className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs font-semibold text-blue-600 transition hover:bg-blue-50 hover:text-blue-700"
+                    onClick={onOpenHelp}
+                    type="button"
+                  >
                     <HelpCircle className="size-4" />
                     Worker 代理端点帮助
                   </button>
@@ -1035,11 +1118,24 @@ function WorkerConfigWizard({
               <>
                 <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
                   Worker 代理端点
-                  <input className={settingsInputClassName} disabled={pending} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://dl.example.com" value={baseUrl} />
+                  <input
+                    className={settingsInputClassName}
+                    disabled={pending}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder="https://dl.example.com"
+                    value={baseUrl}
+                  />
                 </label>
                 <label className="grid gap-1.5 text-sm font-semibold text-slate-700">
                   Worker 加密密钥
-                  <input className={settingsInputClassName} disabled={pending} onChange={(event) => setSecret(event.target.value)} placeholder="与 Worker 的 URL_ENCRYPTION_KEY 一致" type="password" value={secret} />
+                  <input
+                    className={settingsInputClassName}
+                    disabled={pending}
+                    onChange={(event) => setSecret(event.target.value)}
+                    placeholder="与 Worker 的 URL_ENCRYPTION_KEY 一致"
+                    type="password"
+                    value={secret}
+                  />
                 </label>
               </>
             )}
@@ -1075,7 +1171,9 @@ function WorkerConfigWizard({
                           <div className="break-all">tokenPrefix: {item.tokenPrefix}</div>
                           <div>
                             最大链接有效期：
-                            {parsePositiveInteger(item.maxTokenTtlSeconds) ? `${parsePositiveInteger(item.maxTokenTtlSeconds)} 秒` : `未声明，按默认 ${defaultWorkerMaxTokenTtlSeconds} 秒配置 Agent 更稳妥`}
+                            {parsePositiveInteger(item.maxTokenTtlSeconds)
+                              ? `${parsePositiveInteger(item.maxTokenTtlSeconds)} 秒`
+                              : `未声明，按 Worker 默认上限 ${defaultWorkerMaxTokenTtlSeconds} 秒判断`}
                           </div>
                         </div>
                       </div>
@@ -1089,7 +1187,9 @@ function WorkerConfigWizard({
                   </div>
                 ) : null}
                 {verifyResult && !verifyMatchesCurrentInput ? (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">端点内容已修改，请重新检测。</div>
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">
+                    端点内容已修改，请重新检测。
+                  </div>
                 ) : null}
               </>
             ) : (
@@ -1133,6 +1233,159 @@ function WorkerConfigWizard({
               下一步
             </Button>
           )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function LinkTtlConfigWizard({
+  open,
+  setting,
+  activeLinkProxyVersion,
+  workerTtlLimits,
+  saving,
+  onClose,
+  onSave,
+}: {
+  open: boolean
+  setting?: AgentSetting
+  activeLinkProxyVersion: WorkerConfigVersion
+  workerTtlLimits: WorkerTtlLimit[]
+  saving: boolean
+  onClose: () => void
+  onSave: (value: string) => Promise<void>
+}) {
+  const effectiveSeconds = parsePositiveInteger(setting?.value) ?? 6 * 60 * 60
+  const currentFixedOption = linkTtlFixedOptions.find((item) => String(item.value) === setting?.value)
+  const [choice, setChoice] = useState<LinkTtlChoice>('default')
+  const [fixedSeconds, setFixedSeconds] = useState(6 * 60 * 60)
+  const [customSeconds, setCustomSeconds] = useState('')
+  const [localError, setLocalError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    if (setting?.source === 'database' && currentFixedOption) {
+      setChoice('fixed')
+      setFixedSeconds(currentFixedOption.value)
+      setCustomSeconds('')
+    } else if (setting?.source === 'database' && setting.value) {
+      setChoice('custom')
+      setFixedSeconds(6 * 60 * 60)
+      setCustomSeconds(setting.value)
+    } else {
+      setChoice('default')
+      setFixedSeconds(6 * 60 * 60)
+      setCustomSeconds('')
+    }
+    setLocalError(null)
+  }, [currentFixedOption, open, setting?.source, setting?.value])
+
+  const selectedValue = choice === 'default' ? '' : choice === 'fixed' ? String(fixedSeconds) : customSeconds.trim()
+  const selectedSeconds = choice === 'default' ? effectiveSeconds : parsePositiveInteger(selectedValue)
+  const risk = buildLinkCacheTtlRisk(activeLinkProxyVersion, selectedSeconds, workerTtlLimits)
+  const blocksSave = Boolean(risk && workerTtlLimits.length > 0)
+
+  const save = async () => {
+    setLocalError(null)
+    if (choice === 'custom') {
+      if (selectedSeconds === null) {
+        setLocalError('自定义有效期必须是正整数秒数')
+        return
+      }
+      if (selectedSeconds < 60) {
+        setLocalError('自定义有效期不能小于 60 秒')
+        return
+      }
+    }
+    if (blocksSave) return
+    await onSave(selectedValue)
+  }
+
+  return (
+    <Modal open={open} title="链接有效期配置向导" onClose={onClose} maxWidthClassName="max-w-2xl">
+      <div className="grid gap-5">
+        {localError ? <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{localError}</div> : null}
+        <div className="grid gap-3">
+          <button
+            className={`rounded-lg border p-4 text-left transition ${choice === 'default' ? 'border-blue-300 bg-blue-50 text-blue-900 ring-2 ring-blue-100' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+            onClick={() => setChoice('default')}
+            type="button"
+          >
+            <div className="text-base font-bold">使用默认值（当前 {ttlLabel(effectiveSeconds)}）</div>
+          </button>
+
+          <div className={`rounded-lg border p-4 ${choice === 'fixed' ? 'border-blue-300 bg-blue-50 ring-2 ring-blue-100' : 'border-slate-200 bg-white'}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button className="text-left text-base font-bold text-slate-900" onClick={() => setChoice('fixed')} type="button">
+                固定时长
+              </button>
+              <div className="text-xs font-semibold text-slate-500">不会随默认值变化</div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {linkTtlFixedOptions.map((option) => (
+                <button
+                  className={`h-9 rounded-md px-2 text-sm font-semibold ring-1 transition ${choice === 'fixed' && fixedSeconds === option.value ? 'bg-blue-600 text-white ring-blue-600' : 'bg-white text-slate-700 ring-slate-200 hover:bg-slate-50'}`}
+                  key={option.value}
+                  onClick={() => {
+                    setChoice('fixed')
+                    setFixedSeconds(option.value)
+                  }}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label
+            className={`grid gap-2 rounded-lg border p-4 ${choice === 'custom' ? 'border-blue-300 bg-blue-50 ring-2 ring-blue-100' : 'border-slate-200 bg-white'}`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-base font-bold text-slate-900">自定义秒数</span>
+              <span className="text-xs font-semibold text-slate-500">固定配置</span>
+            </div>
+            <input
+              className={settingsInputClassName}
+              min={60}
+              onChange={(event) => {
+                setChoice('custom')
+                setCustomSeconds(event.target.value)
+              }}
+              placeholder="21600"
+              type="number"
+              value={customSeconds}
+            />
+          </label>
+        </div>
+
+        <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+          <div className="font-bold text-slate-900">即将生效</div>
+          <div>生效值：{ttlLabel(selectedSeconds)}</div>
+          <div>该值决定 Agent 生成结果链接的默认有效期、转存文件清理保护时间，并会作为 Broker 接单能力上报。</div>
+          <div>Broker 任务自己的最短要求由请求者创建任务时选择。</div>
+          <div>环境变量 LINK_CACHE_TTL_SECONDS 会优先于代码默认值；固定时长不会随默认值变化。</div>
+        </div>
+
+        {risk ? (
+          <div
+            className={`rounded-md border px-3 py-2 text-sm ${blocksSave ? 'border-red-200 bg-red-50 font-semibold text-red-700' : 'border-amber-200 bg-amber-50 font-semibold text-amber-800'}`}
+          >
+            <div>{risk.message}</div>
+            <div className="mt-1 font-medium">{risk.description}</div>
+            {blocksSave ? <div className="mt-1">请调低有效期，或先提高 Worker MAX_TOKEN_TTL_SECONDS 后重新检测端点。</div> : null}
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+          <Button disabled={saving} onClick={onClose} type="button" variant="secondary">
+            取消
+          </Button>
+          <Button disabled={saving || blocksSave} onClick={save} type="button">
+            {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+            保存配置
+          </Button>
         </div>
       </div>
     </Modal>
@@ -1215,7 +1468,12 @@ function WorkerHelpModal({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="font-bold text-slate-900">手动部署到 Cloudflare Dashboard</div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <a className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100 hover:bg-blue-50" href={workerSourceUrl} rel="noreferrer" target="_blank">
+                    <a
+                      className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100 hover:bg-blue-50"
+                      href={workerSourceUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
                       <ExternalLink className="size-3.5" />
                       worker.js
                     </a>
@@ -1227,7 +1485,7 @@ function WorkerHelpModal({
                   <li>2. 创建 Worker，进入编辑器。</li>
                   <li>3. 打开上方的 worker.js 或点击复制脚本，将内容粘贴到 Worker 编辑器并部署。</li>
                   <li>4. 在 Settings - Variables and Secrets 中添加 Secret：URL_ENCRYPTION_KEY。</li>
-                  <li>5. 确认 Variables 中的 MAX_TOKEN_TTL_SECONDS 不小于 Agent 的链接有效期秒数，默认 86400。</li>
+                  <li>5. 确认 Variables 中的 MAX_TOKEN_TTL_SECONDS 不小于 Agent 的链接有效期秒数；Worker 默认上限为 86400 秒。</li>
                   <li>6. 回到 Agent，填写部署后的 Worker 地址。</li>
                 </ol>
               </div>
@@ -1237,23 +1495,35 @@ function WorkerHelpModal({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="font-bold text-slate-900">部署到阿里云 ESA</div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <a className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100 hover:bg-blue-50" href={esaDeployUrl} rel="noreferrer" target="_blank">
+                    <a
+                      className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100 hover:bg-blue-50"
+                      href={esaDeployUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
                       <ExternalLink className="size-3.5" />
                       ESA 控制台
                     </a>
-                    <a className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100 hover:bg-blue-50" href={esaSourceUrl} rel="noreferrer" target="_blank">
+                    <a
+                      className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100 hover:bg-blue-50"
+                      href={esaSourceUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
                       <ExternalLink className="size-3.5" />
                       esa.edge.js
                     </a>
                     <CopyButton value={esaWorkerSource} label="复制脚本" copiedLabel="已复制" size="sm" />
                   </div>
                 </div>
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">ESA 对国内访问更友好，适合需要降低跨境访问波动的场景。</div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  ESA 对国内访问更友好，适合需要降低跨境访问波动的场景。
+                </div>
                 <ol className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                   <li>1. 打开 ESA Edge Pages 控制台，创建边缘函数。</li>
                   <li>2. 打开上方的 esa.edge.js 或点击复制脚本，将内容粘贴到编辑器。</li>
                   <li>3. 在脚本顶部 CONFIG.URL_ENCRYPTION_KEY 改成高强度随机字符串。</li>
-                  <li>4. 确认 CONFIG.MAX_TOKEN_TTL_SECONDS 不小于 Agent 的链接有效期秒数，默认 86400。</li>
+                  <li>4. 确认 CONFIG.MAX_TOKEN_TTL_SECONDS 不小于 Agent 的链接有效期秒数；Worker 默认上限为 86400 秒。</li>
                   <li>5. ALLOWED_HOSTS 默认是 *，通常无需修改。</li>
                   <li>6. 部署后回到 Agent，填写 ESA 公开访问地址。</li>
                 </ol>
@@ -1276,7 +1546,8 @@ function WorkerHelpModal({
               v2 验证：访问 <span className="font-mono text-xs">https://your-worker.example.com/lc/v2.auto</span>，应返回{' '}
               <span className="font-mono text-xs">version: "v2"</span>、<span className="font-mono text-xs">kid: "x1"</span> 和{' '}
               <span className="font-mono text-xs">publicKey</span>。新版本还会返回 <span className="font-mono text-xs">workerRuntime</span>、{' '}
-              <span className="font-mono text-xs">workerVersion</span> 和 <span className="font-mono text-xs">maxTokenTtlSeconds</span>，用于排查端点类型和提示 Agent 链接有效期上限。
+              <span className="font-mono text-xs">workerVersion</span> 和 <span className="font-mono text-xs">maxTokenTtlSeconds</span>，用于排查端点类型和提示
+              Agent 链接有效期上限。
             </div>
           </div>
         </div>
@@ -1704,8 +1975,7 @@ function MaintenanceSection({
                 {tempCleanup.recentErrors.map((item) => (
                   <div className="break-all" key={item.id}>
                     #{item.id} · {item.status} · 失败 {item.retryCount} 次{item.retryCount > 2 ? ' · 定时清理已跳过' : ''}
-                    {item.retryCount > 5 ? ' · 手动清理也会跳过' : ''} ·{' '}
-                    {item.errorMessage || item.path}
+                    {item.retryCount > 5 ? ' · 手动清理也会跳过' : ''} · {item.errorMessage || item.path}
                   </div>
                 ))}
               </div>
@@ -1898,7 +2168,9 @@ export function SettingsPage() {
   const [workerWizardPreferredVersion, setWorkerWizardPreferredVersion] = useState<WorkerConfigVersion | null>(null)
   const [workerWizardError, setWorkerWizardError] = useState<string | null>(null)
   const [workerV2VerifyResult, setWorkerV2VerifyResult] = useState<WorkerV2VerifyResult | null>(null)
+  const [linkTtlWizardOpen, setLinkTtlWizardOpen] = useState(false)
   const [pendingLinkTtlConfirm, setPendingLinkTtlConfirm] = useState<PendingLinkTtlConfirm>(null)
+  const [pendingLinkTtlWizardConfirm, setPendingLinkTtlWizardConfirm] = useState<PendingLinkTtlWizardConfirm>(null)
   const [tempCleanupResult, setTempCleanupResult] = useState<TempFilesCleanupResult | null>(null)
   const [tempCleanupError, setTempCleanupError] = useState<string | null>(null)
   const statusQuery = api.api.security.status.$get.useQuery()
@@ -1927,22 +2199,23 @@ export function SettingsPage() {
     agentSettingsQuery.isError && !settingsQueryErrorDismissed ? messageFromError(agentSettingsQuery.error, '读取 Agent 配置失败') : null
   const normalizedCurrentV2Endpoints = normalizeEndpointLines(form.linkProxyV2Endpoints ?? settings?.items.linkProxyV2Endpoints?.value ?? '')
   const workerV2VerifyMatchesCurrentSettings = workerV2VerifyResult?.endpoints.join('\n') === normalizedCurrentV2Endpoints
-  const workerTtlLimits = useMemo<WorkerTtlLimit[]>(
-    () => {
-      if (!workerV2VerifyMatchesCurrentSettings) return []
-      return (
-        workerV2VerifyResult?.results
-          .map((item) => ({
-            endpoint: item.endpoint,
-            maxTokenTtlSeconds: parsePositiveInteger(item.maxTokenTtlSeconds),
-          }))
-          .filter((item): item is WorkerTtlLimit => item.maxTokenTtlSeconds !== null) ?? []
-      )
-    },
-    [workerV2VerifyMatchesCurrentSettings, workerV2VerifyResult],
-  )
+  const workerTtlLimits = useMemo<WorkerTtlLimit[]>(() => {
+    if (!workerV2VerifyMatchesCurrentSettings) return []
+    return (
+      workerV2VerifyResult?.results
+        .map((item) => ({
+          endpoint: item.endpoint,
+          maxTokenTtlSeconds: parsePositiveInteger(item.maxTokenTtlSeconds),
+        }))
+        .filter((item): item is WorkerTtlLimit => item.maxTokenTtlSeconds !== null) ?? []
+    )
+  }, [workerV2VerifyMatchesCurrentSettings, workerV2VerifyResult])
   const activeLinkProxyVersion = normalizeWorkerConfigVersion(form.linkProxyVersion || settings?.items.linkProxyVersion?.value)
-  const currentLinkCacheTtlRisk = buildLinkCacheTtlRisk(activeLinkProxyVersion, parsePositiveInteger(form.linkCacheTtlSeconds ?? settings?.items.linkCacheTtlSeconds?.value), workerTtlLimits)
+  const currentLinkCacheTtlRisk = buildLinkCacheTtlRisk(
+    activeLinkProxyVersion,
+    parsePositiveInteger(form.linkCacheTtlSeconds ?? settings?.items.linkCacheTtlSeconds?.value),
+    workerTtlLimits,
+  )
 
   useEffect(() => {
     if (!passwordEnabled) return
@@ -2092,9 +2365,23 @@ export function SettingsPage() {
           onClick={openBrokerWizard}
           type="button"
         >
-          <span className="min-w-0 flex-1 truncate px-2.5">
-            当前：{brokerEnabledLabel(enabled)}
+          <span className="min-w-0 flex-1 truncate px-2.5">当前：{brokerEnabledLabel(enabled)}</span>
+          <span className="h-full w-px shrink-0 bg-slate-200" aria-hidden="true" />
+          <span className="grid h-full w-9 shrink-0 place-items-center text-slate-500">
+            {agentSettingsMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Settings className="size-4" />}
           </span>
+        </button>
+      )
+    }
+    if (setting.name === 'linkCacheTtlSeconds') {
+      return (
+        <button
+          className="flex h-9 w-full min-w-0 items-center overflow-hidden rounded-md border border-slate-300 bg-white text-left text-sm font-semibold text-slate-800 outline-none transition hover:border-blue-300 hover:bg-blue-50/40 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+          disabled={agentSettingsMutation.isPending}
+          onClick={() => setLinkTtlWizardOpen(true)}
+          type="button"
+        >
+          <span className="min-w-0 flex-1 truncate px-2.5">{linkTtlSourceLabel(setting)}</span>
           <span className="h-full w-px shrink-0 bg-slate-200" aria-hidden="true" />
           <span className="grid h-full w-9 shrink-0 place-items-center text-slate-500">
             {agentSettingsMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Settings className="size-4" />}
@@ -2111,9 +2398,7 @@ export function SettingsPage() {
         onClick={openWorkerWizard}
         type="button"
       >
-        <span className="min-w-0 flex-1 truncate px-2.5">
-          当前：{workerConfigVersionLabel(version)}
-        </span>
+        <span className="min-w-0 flex-1 truncate px-2.5">当前：{workerConfigVersionLabel(version)}</span>
         <span className="h-full w-px shrink-0 bg-slate-200" aria-hidden="true" />
         <span className="grid h-full w-9 shrink-0 place-items-center text-slate-500">
           {agentSettingsMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Settings className="size-4" />}
@@ -2121,6 +2406,8 @@ export function SettingsPage() {
       </button>
     )
   }
+
+  const linkTtlSetting = settings?.items.linkCacheTtlSeconds
 
   const helperForSetting = (setting: AgentSetting) => {
     if (setting.name === 'brokerEnabled') {
@@ -2132,7 +2419,9 @@ export function SettingsPage() {
       return (
         <div className="mt-1.5 grid gap-1.5 text-xs leading-5 text-slate-500">
           <div>修改启用状态、Broker URL、Agent Token 或轮询参数都需要通过配置向导完成。</div>
-          {baseUrl ? <div className="break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">Broker Base URL：{baseUrl}</div> : null}
+          {baseUrl ? (
+            <div className="break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">Broker Base URL：{baseUrl}</div>
+          ) : null}
           <div className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">
             Agent Token：{tokenConfigured ? '已设置' : '未设置'}；Heartbeat / Poll：{heartbeat}s / {poll}s；最大并发 Runs：{maxRuns}
           </div>
@@ -2147,13 +2436,17 @@ export function SettingsPage() {
         <div className="mt-1.5 grid gap-1.5 text-xs leading-5 text-slate-500">
           <div>{workerConfigVersionDescription(version)} 修改代理模式、端点或密钥都需要通过配置向导完成。</div>
           {version === 'v2' && v2Endpoints ? (
-            <div className="whitespace-pre-wrap break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">v2 端点：{v2Endpoints}</div>
+            <div className="whitespace-pre-wrap break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">
+              v2 端点：{v2Endpoints}
+            </div>
           ) : null}
           {version === 'v1' && v1Endpoint ? (
             <div className="break-all rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">v1 端点：{v1Endpoint}</div>
           ) : null}
           {version !== 'none' && !v1Endpoint && !v2Endpoints ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 font-semibold text-amber-800">当前模式缺少可用端点，请通过配置向导补全。</div>
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 font-semibold text-amber-800">
+              当前模式缺少可用端点，请通过配置向导补全。
+            </div>
           ) : null}
         </div>
       )
@@ -2162,8 +2455,10 @@ export function SettingsPage() {
     return (
       <div className="mt-2 grid gap-1.5 text-xs leading-5">
         <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-slate-600">
-          该值决定结果链接承诺可用时间和转存文件清理生命周期，也会作为 Broker 接单能力按 provider 上报。
-          {activeLinkProxyVersion === 'v2' ? ` 使用 Worker v2 时，不能超过 Worker 的 MAX_TOKEN_TTL_SECONDS，否则访问代理链接会返回 forbidden。Worker 默认上限为 ${defaultWorkerMaxTokenTtlSeconds} 秒。` : null}
+          该值决定 Agent 生成结果链接的默认有效期和转存文件清理保护时间，也会作为 Broker 接单能力上报；Broker 任务自己的最短要求由请求者创建任务时选择。
+          {activeLinkProxyVersion === 'v2'
+            ? ` 使用 Worker v2 时，不能超过 Worker 的 MAX_TOKEN_TTL_SECONDS，否则访问代理链接会返回 forbidden。Worker 默认上限为 ${defaultWorkerMaxTokenTtlSeconds} 秒。`
+            : null}
         </div>
         {currentLinkCacheTtlRisk ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 font-semibold text-amber-800">
@@ -2271,6 +2566,38 @@ export function SettingsPage() {
     }
   }
 
+  const persistLinkTtlWizardSetting = async (value: string) => {
+    setError(null)
+    try {
+      await agentSettingsMutation.mutateAsync({
+        json: {
+          values: {
+            linkCacheTtlSeconds: value,
+          },
+        },
+      })
+      const result = await agentSettingsQuery.refetch()
+      setForm(initialFormFromSettings(result.data?.data))
+      setLinkTtlWizardOpen(false)
+      pushNotification({
+        variant: 'success',
+        message: value.trim() ? '链接有效期已保存为固定配置' : '链接有效期已切回默认值',
+      })
+    } catch (err) {
+      setError(messageFromError(err, '保存链接有效期失败'))
+    }
+  }
+
+  const saveLinkTtlWizardSetting = async (value: string) => {
+    const effectiveSeconds = value.trim() ? parsePositiveInteger(value) : parsePositiveInteger(linkTtlSetting?.value)
+    const risk = buildLinkCacheTtlRisk(activeLinkProxyVersion, effectiveSeconds, workerTtlLimits)
+    if (risk && workerTtlLimits.length === 0) {
+      setPendingLinkTtlWizardConfirm({ value, risk })
+      return
+    }
+    await persistLinkTtlWizardSetting(value)
+  }
+
   const saveBooleanSetting = async (setting: AgentSetting, value: string) => {
     setError(null)
     setSavingSettingName(setting.name)
@@ -2357,7 +2684,7 @@ export function SettingsPage() {
       await agentSettingsQuery.refetch()
       pushNotification({
         variant: 'success',
-            message: setting.name === 'linkProxyV2Endpoints' ? '已回退 Worker v2 代理端点' : `${setting.label} 已回退到环境变量或默认值`,
+        message: setting.name === 'linkProxyV2Endpoints' ? '已回退 Worker v2 代理端点' : `${setting.label} 已回退到环境变量或默认值`,
       })
     } catch (err) {
       setError(messageFromError(err, `回退 ${setting.label} 失败`))
@@ -2809,6 +3136,21 @@ export function SettingsPage() {
           if (pending) void persistSetting(pending.setting, pending.value)
         }}
       />
+      <ConfirmDialog
+        cancelLabel="返回修改"
+        confirmLabel="仍然保存"
+        description={pendingLinkTtlWizardConfirm ? `${pendingLinkTtlWizardConfirm.risk.message} ${pendingLinkTtlWizardConfirm.risk.description}` : undefined}
+        disabled={agentSettingsMutation.isPending}
+        open={pendingLinkTtlWizardConfirm !== null}
+        title="链接有效期可能超过 Worker 上限"
+        variant="primary"
+        onCancel={() => setPendingLinkTtlWizardConfirm(null)}
+        onConfirm={() => {
+          const pending = pendingLinkTtlWizardConfirm
+          setPendingLinkTtlWizardConfirm(null)
+          if (pending) void persistLinkTtlWizardSetting(pending.value)
+        }}
+      />
       <BrokerConfigWizard
         error={brokerWizardError}
         initialForm={form}
@@ -2844,6 +3186,18 @@ export function SettingsPage() {
         }}
         onSave={saveWorkerWizardSettings}
         onVerifyV2={verifyWorkerV2Endpoints}
+      />
+      <LinkTtlConfigWizard
+        activeLinkProxyVersion={activeLinkProxyVersion}
+        open={linkTtlWizardOpen}
+        saving={agentSettingsMutation.isPending}
+        setting={linkTtlSetting}
+        workerTtlLimits={workerTtlLimits}
+        onClose={() => {
+          setLinkTtlWizardOpen(false)
+          setPendingLinkTtlWizardConfirm(null)
+        }}
+        onSave={saveLinkTtlWizardSetting}
       />
       {desktopSwitchOverlay ? <DesktopSwitchLoading message={desktopSwitchOverlay.message} /> : null}
     </div>

@@ -1,5 +1,5 @@
 import { useSetAtom } from 'jotai'
-import { Activity, Download, Eye, LogIn, PauseCircle, PlayCircle, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Activity, Download, ExternalLink, Eye, HelpCircle, LogIn, PauseCircle, PlayCircle, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { useMemo, useState, type FormEvent } from 'react'
 import { api, messageFromError, type LocalAccount, type LocalAccountCredentialExport, type LocalAccountDetail, type RiskConsentType } from '../api'
 import { RiskConsentDialog } from '../components/RiskConsentDialog'
@@ -437,12 +437,21 @@ function OwnedOpenPlatformForm({ onDone }: { onDone: () => Promise<void> }) {
   const [openPlatformClientKey, setOpenPlatformClientKey] = useState('')
   const [openPlatformSecretKey, setOpenPlatformSecretKey] = useState('')
   const [openPlatformServerUse, setOpenPlatformServerUse] = useState(false)
+  const [openListHelpOpen, setOpenListHelpOpen] = useState(false)
   const [probe, setProbe] = useState<AccountProbeData | null>(null)
   const setError = useSetAtom(errorAtom)
   const probeMutation = api.api.local.accounts.probe.$post.useMutation()
   const createMutation = api.api.local.accounts.$post.useMutation()
   const canSubmitCredential = openPlatformServerUse || (openPlatformClientKey.trim() && openPlatformSecretKey.trim())
   const resetProbe = () => setProbe(null)
+  const setOpenListServerUse = (next: boolean) => {
+    setOpenPlatformServerUse(next)
+    if (next) {
+      setOpenPlatformClientKey('')
+      setOpenPlatformSecretKey('')
+    }
+    resetProbe()
+  }
 
   const runProbe = async () => {
     setError(null)
@@ -493,6 +502,52 @@ function OwnedOpenPlatformForm({ onDone }: { onDone: () => Promise<void> }) {
       <Field label="权重">
         <Input min="1" type="number" value={weight} onChange={(event) => setWeight(event.target.value)} />
       </Field>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="font-semibold text-slate-800">使用 OpenList 提供的令牌获取工具</div>
+          <button
+            aria-label="查看 OpenList 令牌获取工具教程"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-white hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
+            onClick={() => setOpenListHelpOpen(true)}
+            title="查看教程"
+            type="button"
+          >
+            <HelpCircle className="size-4" />
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <a
+            className="inline-flex min-h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 ring-1 ring-blue-100 transition hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
+            href="https://api.oplist.org/"
+            rel="noreferrer"
+            target="_blank"
+          >
+            <ExternalLink className="size-3.5" />
+            api.oplist.org
+          </a>
+          <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1" aria-label="OpenList 令牌获取工具启用状态">
+            {[
+              { value: true, label: '启用' },
+              { value: false, label: '关闭' },
+            ].map((item) => {
+              const active = openPlatformServerUse === item.value
+              return (
+                <button
+                  aria-pressed={active}
+                  className={`inline-flex min-h-7 items-center justify-center rounded-md px-2.5 py-1 text-xs font-semibold transition ${
+                    active ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  key={item.label}
+                  onClick={() => setOpenListServerUse(item.value)}
+                  type="button"
+                >
+                  {item.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
       <Field label="refresh_token">
         <Textarea
           className="min-h-32"
@@ -504,25 +559,6 @@ function OwnedOpenPlatformForm({ onDone }: { onDone: () => Promise<void> }) {
           placeholder="122.xxxxxx..."
         />
       </Field>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-3">
-        <div className="font-semibold text-slate-800">使用 OpenList 提供的参数</div>
-        <Button
-          onClick={() => {
-            const next = !openPlatformServerUse
-            setOpenPlatformServerUse(next)
-            if (next) {
-              setOpenPlatformClientKey('')
-              setOpenPlatformSecretKey('')
-            }
-            resetProbe()
-          }}
-          size="sm"
-          type="button"
-          variant={openPlatformServerUse ? 'primary' : 'secondary'}
-        >
-          {openPlatformServerUse ? '已启用' : '未启用'}
-        </Button>
-      </div>
       <div className="grid gap-3 md:grid-cols-2">
         <Field label="AppKey / AK">
           <Input
@@ -557,7 +593,31 @@ function OwnedOpenPlatformForm({ onDone }: { onDone: () => Promise<void> }) {
         </Button>
       </div>
       <ProbeResultCard openPlatform probe={probe} />
+      <OpenListTokenHelpModal open={openListHelpOpen} onClose={() => setOpenListHelpOpen(false)} />
     </form>
+  )
+}
+
+function OpenListTokenHelpModal({ onClose, open }: { open: boolean; onClose: () => void }) {
+  return (
+    <Modal open={open} title="OpenList 令牌获取工具教程" onClose={onClose} maxWidthClassName="max-w-lg">
+      <div className="grid gap-4 text-sm leading-6 text-slate-600">
+        <ol className="grid list-decimal gap-2 pl-5">
+          <li>
+            打开{' '}
+            <a className="font-semibold text-blue-700 hover:text-blue-800" href="https://api.oplist.org/" rel="noreferrer" target="_blank">
+              https://api.oplist.org/
+            </a>
+            。
+          </li>
+          <li>选择“百度网盘（OAuth2）验证登录”。</li>
+          <li>勾选“使用 OpenList 提供的令牌获取工具”。</li>
+          <li>点击“获取 token”，按页面提示完成登录跳转。</li>
+          <li>回到原页面后，复制 122. 开头的刷新令牌（Refresh Token），粘贴到本表单的 refresh_token。</li>
+        </ol>
+        <InlineAlert variant="warning">OpenList 令牌获取工具由第三方提供，请确认你理解并接受相关风险后再使用。</InlineAlert>
+      </div>
+    </Modal>
   )
 }
 
@@ -610,7 +670,9 @@ function CredentialExportModal({ data, onClose }: { data: LocalAccountCredential
         <InlineAlert variant="warning">导出内容包含敏感凭据，任何获得该文件的人都可能使用对应账号能力。</InlineAlert>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-sm text-slate-600">
-            {data ? `${data.account.baiduName || data.account.label || `账号 #${data.account.id}`} · ${data.account.credentialSource === 'open_platform' ? '开放平台' : 'Cookie'}` : ''}
+            {data
+              ? `${data.account.baiduName || data.account.label || `账号 #${data.account.id}`} · ${data.account.credentialSource === 'open_platform' ? '开放平台' : 'Cookie'}`
+              : ''}
           </div>
           <Button onClick={download}>
             <Download className="size-4" />

@@ -84,17 +84,7 @@ const encryptV2Payload = (payload: Record<string, unknown>, receiverPublicKey: U
   return base64url(Buffer.concat([Buffer.from(ephemeralPublicKey), nonce, ciphertext, tag]))
 }
 
-const hkdfSha256 = ({
-  inputKeyMaterial,
-  salt,
-  info,
-  lengthBytes,
-}: {
-  inputKeyMaterial: Uint8Array
-  salt: Buffer
-  info: Buffer
-  lengthBytes: number
-}) => {
+const hkdfSha256 = ({ inputKeyMaterial, salt, info, lengthBytes }: { inputKeyMaterial: Uint8Array; salt: Buffer; info: Buffer; lengthBytes: number }) => {
   const prk = crypto.createHmac('sha256', salt).update(Buffer.from(inputKeyMaterial)).digest()
   const blocks: Buffer[] = []
   let previous = Buffer.alloc(0)
@@ -281,7 +271,12 @@ export const getLinkProxyConfig = () => {
   const secret = getSettingWithSource('linkProxySecret')
   const v2Endpoints = getSettingWithSource('linkProxyV2Endpoints')
   const configuredVersion: LinkProxyVersion = version.value === 'v2' ? 'v2' : version.value === 'v1' ? 'v1' : 'none'
-  const legacyV1FromEnv = configuredVersion === 'none' && version.source === 'default' && baseUrl.source === 'env' && secret.source === 'env' && Boolean(baseUrl.value && secret.value)
+  const legacyV1FromEnv =
+    configuredVersion === 'none' &&
+    version.source === 'default' &&
+    baseUrl.source === 'env' &&
+    secret.source === 'env' &&
+    Boolean(baseUrl.value && secret.value)
   const resolvedVersion: LinkProxyVersion = legacyV1FromEnv ? 'v1' : configuredVersion
   const endpoints = resolvedVersion === 'v2' ? parseV2Endpoints(v2Endpoints.value) : []
   return {

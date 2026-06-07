@@ -57,8 +57,7 @@ const versionFiles = [
   {
     path: 'docs/broker-protocol/AGENT_API.md',
     replacements: [
-      { from: '"client_version": "agent-v0.0.0"', to: `"client_version": "agent-v${version}"` },
-      { from: '"version": "0.0.0"', to: `"version": "${version}"` },
+      { from: '"client_version": "0.0.0"', to: `"client_version": "${version}"` },
     ],
   },
 ]

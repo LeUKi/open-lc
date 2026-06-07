@@ -2,7 +2,16 @@ import { Link, Outlet, useRouterState } from '@tanstack/react-router'
 import { useSetAtom } from 'jotai'
 import { AlertCircle, Bot, Database, ExternalLink, History, LayoutDashboard, Loader2, Lock, RefreshCw, Settings, Sparkles } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
-import { api, clearStoredAgentPassword, errorMessage, getStoredAgentPassword, honoClient, messageFromError, setStoredAgentPassword, type UpdateCheck } from '../api'
+import {
+  api,
+  clearStoredAgentPassword,
+  errorMessage,
+  getStoredAgentPassword,
+  honoClient,
+  messageFromError,
+  setStoredAgentPassword,
+  type UpdateCheck,
+} from '../api'
 import { clearNotificationsAtom } from '../state'
 import { agentVersion } from '../version'
 import { NotificationCenter } from './Common'
@@ -17,6 +26,18 @@ const navItems = [
   { to: '/broker', label: 'Broker 执行', icon: Bot, feature: 'broker' },
   { to: '/settings', label: '设置', icon: Settings },
 ] as const
+
+function AgentBrandLockup({ className = '' }: { className?: string }) {
+  return (
+    <span className={`agent-brand-lockup ${className}`} aria-label="Link & Coin Agent">
+      <span className="agent-brand-kicker agent-brand-kicker-row">
+        <span className="truncate">Link & Coin</span>
+        <span className="agent-brand-beta-tag">Open Source</span>
+      </span>
+      <span className="agent-brand-title block">Agent</span>
+    </span>
+  )
+}
 
 export function AppShell() {
   const { pathname } = useRouterState({
@@ -136,8 +157,8 @@ export function AppShell() {
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-6 py-3 max-md:px-4">
           <div className="flex min-w-0 items-center gap-3">
             <img className="size-10 shrink-0 rounded-lg object-cover shadow-sm ring-1 ring-slate-200" src={appIconSrc} alt="" />
-            <div className="min-w-0">
-              <div className="truncate text-lg font-bold">LC Agent</div>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <AgentBrandLockup className="min-w-0" />
               <VersionLabel checking={manualUpdatePending} error={manualUpdateError} onCheck={() => void checkUpdateNow()} update={updateCheck} />
             </div>
           </div>
@@ -200,35 +221,39 @@ function VersionLabel({
     window.open(update.releaseUrl, '_blank', 'noopener,noreferrer')
   }
   const latestVersion = update?.latestVersion ? `v${update.latestVersion}` : ''
+  const updateError = error ?? update?.errorMessage ?? null
+  const staleLatestText = updateError && latestVersion ? `，上次记录 ${latestVersion}` : ''
   const checkTitle = checking
     ? '正在检查更新'
-    : error
-      ? `更新检测失败: ${error}`
-      : update?.errorMessage
-        ? `更新检测失败: ${update.errorMessage}`
-        : latestVersion
-          ? update?.hasUpdate
-            ? `发现 ${latestVersion}`
-            : `已是最新版本，最新版本 ${latestVersion}`
-          : '检查更新'
+    : updateError
+      ? `更新检测失败: ${updateError}${staleLatestText}`
+      : latestVersion
+        ? update?.hasUpdate
+          ? `发现 ${latestVersion}`
+          : `已是最新版本，最新版本 ${latestVersion}`
+        : '检查更新'
 
-  const versionNode = update?.hasUpdate ? (
-    <button
-      className="inline-flex h-4 min-w-0 items-center gap-1 rounded-full text-left text-xs font-medium leading-4 text-slate-500 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
-      onClick={openRelease}
-      title={`发现 ${latestVersion || '新版本'}，点击查看 Release`}
-      type="button"
-    >
-      <span className="shrink-0">v{agentVersion}</span>
-      <Sparkles className="size-3 shrink-0 text-blue-600" />
-      <span className="truncate text-blue-700">最新 {latestVersion || '新版本'}</span>
-      <ExternalLink className="size-3 shrink-0" />
-    </button>
-  ) : (
-    <span className="inline-flex h-4 items-center text-xs font-medium leading-4 text-slate-500" title={update?.errorMessage ? `更新检测失败: ${update.errorMessage}` : undefined}>
-      v{agentVersion}
-    </span>
-  )
+  const versionNode =
+    !updateError && update?.hasUpdate ? (
+      <button
+        className="inline-flex h-4 min-w-0 items-center gap-1 rounded-full text-left text-xs font-medium leading-4 text-slate-500 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
+        onClick={openRelease}
+        title={`发现 ${latestVersion || '新版本'}，点击查看 Release`}
+        type="button"
+      >
+        <span className="shrink-0">v{agentVersion}</span>
+        <Sparkles className="size-3 shrink-0 text-blue-600" />
+        <span className="truncate text-blue-700">最新 {latestVersion || '新版本'}</span>
+        <ExternalLink className="size-3 shrink-0" />
+      </button>
+    ) : (
+      <span
+        className="inline-flex h-4 items-center text-xs font-medium leading-4 text-slate-500"
+        title={updateError ? `更新检测失败: ${updateError}${staleLatestText}` : undefined}
+      >
+        v{agentVersion}
+      </span>
+    )
 
   return (
     <div className="flex min-w-0 items-center gap-1.5">

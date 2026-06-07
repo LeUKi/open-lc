@@ -228,14 +228,17 @@ const toNumber = (value: unknown) => Number(value ?? 0)
 const toString = (value: unknown) => String(value ?? '')
 const diskListOrder = (order?: 'time' | 'filename') => (order === 'time' ? 'time' : 'name')
 
-export const formatUpstreamErrorMessage = (response: {
-  show_msg?: unknown
-  errmsg?: unknown
-  error_msg?: unknown
-  error_code?: unknown
-  info?: unknown
-  errno?: unknown
-}, fallback?: string) => {
+export const formatUpstreamErrorMessage = (
+  response: {
+    show_msg?: unknown
+    errmsg?: unknown
+    error_msg?: unknown
+    error_code?: unknown
+    info?: unknown
+    errno?: unknown
+  },
+  fallback?: string,
+) => {
   const formatValue = (value: unknown) => {
     if (value === undefined || value === null || value === '') return null
     if (typeof value === 'string') return value
@@ -823,11 +826,7 @@ export class BaiduClient {
       )
     }
     if (response.errno === 8001) {
-      throw upstreamError(
-        'BAIDU_COOKIE_OR_ACCOUNT_RESTRICTED',
-        `获取 dlink 失败: ${formatUpstreamErrorMessage(response, '账号状态异常或环境受限')}`,
-        response,
-      )
+      throw upstreamError('BAIDU_COOKIE_OR_ACCOUNT_RESTRICTED', `获取 dlink 失败: ${formatUpstreamErrorMessage(response, '账号状态异常或环境受限')}`, response)
     }
     if (response.errno === -20) {
       throw upstreamError('BAIDU_CAPTCHA_OR_RISK_CONTROL', `获取 dlink 失败: ${formatUpstreamErrorMessage(response, '需要验证码或触发风控')}`, response)
@@ -1025,7 +1024,11 @@ export class BaiduClient {
     })
 
     if (response.error_code || response.error_msg || !response.urls) {
-      throw upstreamError('DLINK_FAILED', `获取直链失败: ${formatUpstreamErrorMessage({ ...response, errno: response.error_code ?? response.errno })}`, response)
+      throw upstreamError(
+        'DLINK_FAILED',
+        `获取直链失败: ${formatUpstreamErrorMessage({ ...response, errno: response.error_code ?? response.errno })}`,
+        response,
+      )
     }
 
     return response.urls

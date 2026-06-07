@@ -103,6 +103,48 @@ textarea {
   color: #0f172a;
 }
 
+.agent-brand-lockup {
+  display: block;
+  line-height: 1;
+  transform: translateY(2px);
+}
+
+.agent-brand-kicker {
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: #64748b;
+}
+
+.agent-brand-kicker-row {
+  display: flex !important;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-brand-beta-tag {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 5px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.agent-brand-title {
+  margin-top: -1px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: 0;
+  color: #0f172a;
+}
+
 @media (max-width: 768px) {
   .mobile-scrollbar-none {
     scrollbar-width: none;
